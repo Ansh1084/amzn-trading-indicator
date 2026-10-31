@@ -1,0 +1,11 @@
+symbol: AMZN
+timeframe: 5Min
+feed: IEX
+timezone: America/New_York
+session:
+  start: "09:30"
+  end: "16:00"
+target:
+  horizon_minutes: 10
+  type: direction
+  flat_class: down

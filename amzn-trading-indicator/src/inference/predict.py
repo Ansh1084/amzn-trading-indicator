@@ -1,0 +1,1 @@
+"""Shared live inference pipeline."""

@@ -1,0 +1,9 @@
+model:
+  primary_candidate: lightgbm
+  experiments: [logistic_regression, random_forest, lstm, lorentzian_knn]
+evaluation:
+  chronological: true
+  train_fraction: 0.70
+  validation_fraction: 0.15
+  test_fraction: 0.15
+  purge_minutes: 10

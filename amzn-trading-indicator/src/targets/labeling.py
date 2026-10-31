@@ -1,0 +1,1 @@
+"""Ten-minute target construction."""
