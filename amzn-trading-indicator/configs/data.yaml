@@ -8,4 +8,4 @@ session:
 target:
   horizon_minutes: 10
   type: direction
-  flat_class: down
+  neutral_threshold_bps: 0.0
