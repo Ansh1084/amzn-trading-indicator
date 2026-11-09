@@ -1,0 +1,347 @@
+{
+  "experiment_timestamp": "2026-11-07T13:08:35.117596+00:00",
+  "dataset": {
+    "total_candles": 19506,
+    "valid_target_candles": 18868,
+    "invalid_target_candles": 638,
+    "feature_count": 40,
+    "feature_columns": [
+      "return_1",
+      "return_2",
+      "return_3",
+      "log_return_1",
+      "price_change",
+      "candle_body",
+      "candle_range",
+      "upper_wick",
+      "lower_wick",
+      "body_to_range",
+      "sma_5",
+      "sma_10",
+      "sma_20",
+      "ema_5",
+      "ema_10",
+      "ema_20",
+      "macd",
+      "macd_signal",
+      "macd_hist",
+      "rsi_14",
+      "roc_5",
+      "roc_10",
+      "atr_14",
+      "bb_upper",
+      "bb_middle",
+      "bb_lower",
+      "bb_width",
+      "bb_position",
+      "volume_change",
+      "volume_sma_5",
+      "volume_sma_20",
+      "volume_ratio_5",
+      "volume_ratio_20",
+      "volume_ratio",
+      "vwap_distance",
+      "hour",
+      "minute",
+      "day_of_week",
+      "time_of_day_sin",
+      "time_of_day_cos"
+    ]
+  },
+  "split": {
+    "n_train_sessions": 176,
+    "n_val_sessions": 38,
+    "n_test_sessions": 37,
+    "n_train_candles": 13207,
+    "n_val_candles": 2866,
+    "n_test_candles": 2791,
+    "n_purged_train": 2,
+    "n_purged_val": 2,
+    "train_date_range": [
+      "2025-10-27",
+      "2026-07-10"
+    ],
+    "val_date_range": [
+      "2026-07-13",
+      "2026-09-02"
+    ],
+    "test_date_range": [
+      "2026-09-03",
+      "2026-10-26"
+    ]
+  },
+  "missing_value_handling": {
+    "nan_before_train": 232,
+    "nan_before_val": 0,
+    "nan_before_test": 0,
+    "fill_values_source": "train_median",
+    "nan_after_train": 0,
+    "nan_after_val": 0,
+    "nan_after_test": 0
+  },
+  "target_distribution": {
+    "train": {
+      "n_up": 6599,
+      "n_down": 6608,
+      "pct_up": 49.97
+    },
+    "val": {
+      "n_up": 1443,
+      "n_down": 1423,
+      "pct_up": 50.35
+    },
+    "test": {
+      "n_up": 1377,
+      "n_down": 1414,
+      "pct_up": 49.34
+    }
+  },
+  "models_trained": [
+    "DummyClassifier (majority)",
+    "LogisticRegression",
+    "RandomForest",
+    "HistGradientBoosting",
+    "LightGBM"
+  ],
+  "best_model": {
+    "name": "HistGradientBoosting",
+    "selected_by": "validation_f1_score",
+    "val_f1": 0.503854,
+    "val_accuracy": 0.505932,
+    "val_roc_auc": 0.506373
+  },
+  "validation_results": [
+    {
+      "model_name": "DummyClassifier (majority)",
+      "split_name": "val",
+      "accuracy": 0.496511,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1_score": 0.0,
+      "roc_auc": null,
+      "confusion_matrix": [
+        [
+          1423,
+          0
+        ],
+        [
+          1443,
+          0
+        ]
+      ],
+      "classification_report": "              precision    recall  f1-score   support\n\n         0.0       0.50      1.00      0.66      1423\n         1.0       0.00      0.00      0.00      1443\n\n    accuracy                           0.50      2866\n   macro avg       0.25      0.50      0.33      2866\nweighted avg       0.25      0.50      0.33      2866\n",
+      "n_samples": 2866,
+      "n_positive": 1443,
+      "n_negative": 1423
+    },
+    {
+      "model_name": "LogisticRegression",
+      "split_name": "val",
+      "accuracy": 0.524424,
+      "precision": 0.535461,
+      "recall": 0.418572,
+      "f1_score": 0.469856,
+      "roc_auc": 0.528313,
+      "confusion_matrix": [
+        [
+          899,
+          524
+        ],
+        [
+          839,
+          604
+        ]
+      ],
+      "classification_report": "              precision    recall  f1-score   support\n\n         0.0       0.52      0.63      0.57      1423\n         1.0       0.54      0.42      0.47      1443\n\n    accuracy                           0.52      2866\n   macro avg       0.53      0.53      0.52      2866\nweighted avg       0.53      0.52      0.52      2866\n",
+      "n_samples": 2866,
+      "n_positive": 1443,
+      "n_negative": 1423
+    },
+    {
+      "model_name": "RandomForest",
+      "split_name": "val",
+      "accuracy": 0.493022,
+      "precision": 0.496148,
+      "recall": 0.446292,
+      "f1_score": 0.469901,
+      "roc_auc": 0.494443,
+      "confusion_matrix": [
+        [
+          769,
+          654
+        ],
+        [
+          799,
+          644
+        ]
+      ],
+      "classification_report": "              precision    recall  f1-score   support\n\n         0.0       0.49      0.54      0.51      1423\n         1.0       0.50      0.45      0.47      1443\n\n    accuracy                           0.49      2866\n   macro avg       0.49      0.49      0.49      2866\nweighted avg       0.49      0.49      0.49      2866\n",
+      "n_samples": 2866,
+      "n_positive": 1443,
+      "n_negative": 1423
+    },
+    {
+      "model_name": "HistGradientBoosting",
+      "split_name": "val",
+      "accuracy": 0.505932,
+      "precision": 0.509568,
+      "recall": 0.498267,
+      "f1_score": 0.503854,
+      "roc_auc": 0.506373,
+      "confusion_matrix": [
+        [
+          731,
+          692
+        ],
+        [
+          724,
+          719
+        ]
+      ],
+      "classification_report": "              precision    recall  f1-score   support\n\n         0.0       0.50      0.51      0.51      1423\n         1.0       0.51      0.50      0.50      1443\n\n    accuracy                           0.51      2866\n   macro avg       0.51      0.51      0.51      2866\nweighted avg       0.51      0.51      0.51      2866\n",
+      "n_samples": 2866,
+      "n_positive": 1443,
+      "n_negative": 1423
+    },
+    {
+      "model_name": "LightGBM",
+      "split_name": "val",
+      "accuracy": 0.491626,
+      "precision": 0.495132,
+      "recall": 0.493416,
+      "f1_score": 0.494273,
+      "roc_auc": 0.491664,
+      "confusion_matrix": [
+        [
+          697,
+          726
+        ],
+        [
+          731,
+          712
+        ]
+      ],
+      "classification_report": "              precision    recall  f1-score   support\n\n         0.0       0.49      0.49      0.49      1423\n         1.0       0.50      0.49      0.49      1443\n\n    accuracy                           0.49      2866\n   macro avg       0.49      0.49      0.49      2866\nweighted avg       0.49      0.49      0.49      2866\n",
+      "n_samples": 2866,
+      "n_positive": 1443,
+      "n_negative": 1423
+    }
+  ],
+  "test_results": [
+    {
+      "model_name": "DummyClassifier (majority)",
+      "split_name": "test",
+      "accuracy": 0.506628,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1_score": 0.0,
+      "roc_auc": null,
+      "confusion_matrix": [
+        [
+          1414,
+          0
+        ],
+        [
+          1377,
+          0
+        ]
+      ],
+      "classification_report": "              precision    recall  f1-score   support\n\n         0.0       0.51      1.00      0.67      1414\n         1.0       0.00      0.00      0.00      1377\n\n    accuracy                           0.51      2791\n   macro avg       0.25      0.50      0.34      2791\nweighted avg       0.26      0.51      0.34      2791\n",
+      "n_samples": 2791,
+      "n_positive": 1377,
+      "n_negative": 1414
+    },
+    {
+      "model_name": "LogisticRegression",
+      "split_name": "test",
+      "accuracy": 0.49158,
+      "precision": 0.480978,
+      "recall": 0.385621,
+      "f1_score": 0.428053,
+      "roc_auc": 0.488733,
+      "confusion_matrix": [
+        [
+          841,
+          573
+        ],
+        [
+          846,
+          531
+        ]
+      ],
+      "classification_report": "              precision    recall  f1-score   support\n\n         0.0       0.50      0.59      0.54      1414\n         1.0       0.48      0.39      0.43      1377\n\n    accuracy                           0.49      2791\n   macro avg       0.49      0.49      0.49      2791\nweighted avg       0.49      0.49      0.49      2791\n",
+      "n_samples": 2791,
+      "n_positive": 1377,
+      "n_negative": 1414
+    },
+    {
+      "model_name": "RandomForest",
+      "split_name": "test",
+      "accuracy": 0.496954,
+      "precision": 0.488372,
+      "recall": 0.411765,
+      "f1_score": 0.446809,
+      "roc_auc": 0.494576,
+      "confusion_matrix": [
+        [
+          820,
+          594
+        ],
+        [
+          810,
+          567
+        ]
+      ],
+      "classification_report": "              precision    recall  f1-score   support\n\n         0.0       0.50      0.58      0.54      1414\n         1.0       0.49      0.41      0.45      1377\n\n    accuracy                           0.50      2791\n   macro avg       0.50      0.50      0.49      2791\nweighted avg       0.50      0.50      0.49      2791\n",
+      "n_samples": 2791,
+      "n_positive": 1377,
+      "n_negative": 1414
+    },
+    {
+      "model_name": "HistGradientBoosting",
+      "split_name": "test",
+      "accuracy": 0.487281,
+      "precision": 0.480088,
+      "recall": 0.472767,
+      "f1_score": 0.4764,
+      "roc_auc": 0.482421,
+      "confusion_matrix": [
+        [
+          709,
+          705
+        ],
+        [
+          726,
+          651
+        ]
+      ],
+      "classification_report": "              precision    recall  f1-score   support\n\n         0.0       0.49      0.50      0.50      1414\n         1.0       0.48      0.47      0.48      1377\n\n    accuracy                           0.49      2791\n   macro avg       0.49      0.49      0.49      2791\nweighted avg       0.49      0.49      0.49      2791\n",
+      "n_samples": 2791,
+      "n_positive": 1377,
+      "n_negative": 1414
+    },
+    {
+      "model_name": "LightGBM",
+      "split_name": "test",
+      "accuracy": 0.490147,
+      "precision": 0.482912,
+      "recall": 0.472041,
+      "f1_score": 0.477415,
+      "roc_auc": 0.487689,
+      "confusion_matrix": [
+        [
+          718,
+          696
+        ],
+        [
+          727,
+          650
+        ]
+      ],
+      "classification_report": "              precision    recall  f1-score   support\n\n         0.0       0.50      0.51      0.50      1414\n         1.0       0.48      0.47      0.48      1377\n\n    accuracy                           0.49      2791\n   macro avg       0.49      0.49      0.49      2791\nweighted avg       0.49      0.49      0.49      2791\n",
+      "n_samples": 2791,
+      "n_positive": 1377,
+      "n_negative": 1414
+    }
+  ]
+}

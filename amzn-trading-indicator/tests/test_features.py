@@ -33,6 +33,7 @@ import pytest
 from src.features.engineering import (
     FEATURE_COLUMNS,
     REQUIRED_INPUT_COLUMNS,
+    _compute_rsi,
     generate_features,
     get_feature_columns,
     get_missing_feature_counts,
@@ -77,9 +78,9 @@ class TestFeatureOutputColumns:
             assert col in res.columns
             pd.testing.assert_series_equal(res[col], df[col])
 
-        # 2. All 40 engineered features present
+        # 2. All 36 engineered features present
         expected_features = get_feature_columns()
-        assert len(expected_features) == 40
+        assert len(expected_features) == 36
         for feat in expected_features:
             assert feat in res.columns
 
@@ -175,7 +176,7 @@ class TestPriceAndReturnCalculations:
 
 class TestTrendCalculations:
     def test_sma_and_ema(self):
-        """Test 5-period SMA and EMA calculations against manual formula."""
+        """Test 5-period SMA and EMA relative ratios against manual formula."""
         prices = [10.0, 12.0, 14.0, 16.0, 18.0, 20.0]
         df = pd.DataFrame(
             {
@@ -191,10 +192,12 @@ class TestTrendCalculations:
         res = generate_features(df, reset_daily=False)
 
         # SMA 5 at index 4: mean of [10, 12, 14, 16, 18] = 14.0
-        assert np.isnan(res.loc[3, "sma_5"])
-        assert pytest.approx(res.loc[4, "sma_5"]) == 14.0
+        # sma_ratio_5 = (18.0 - 14.0) / 14.0 = 4 / 14 = 2/7 ~ 0.285714
+        assert np.isnan(res.loc[3, "sma_ratio_5"])
+        assert pytest.approx(res.loc[4, "sma_ratio_5"]) == 4.0 / 14.0
         # SMA 5 at index 5: mean of [12, 14, 16, 18, 20] = 16.0
-        assert pytest.approx(res.loc[5, "sma_5"]) == 16.0
+        # sma_ratio_5 = (20.0 - 16.0) / 16.0 = 4 / 16 = 0.25
+        assert pytest.approx(res.loc[5, "sma_ratio_5"]) == 0.25
 
         # EMA with adjust=False:
         # alpha = 2 / (5 + 1) = 1/3
@@ -205,9 +208,9 @@ class TestTrendCalculations:
         e0 = 10.0
         e1 = alpha * 12.0 + (1 - alpha) * e0
         e2 = alpha * 14.0 + (1 - alpha) * e1
-        assert pytest.approx(res.loc[0, "ema_5"]) == e0
-        assert pytest.approx(res.loc[1, "ema_5"]) == e1
-        assert pytest.approx(res.loc[2, "ema_5"]) == e2
+        assert pytest.approx(res.loc[0, "ema_ratio_5"]) == (10.0 - e0) / e0  # 0.0
+        assert pytest.approx(res.loc[1, "ema_ratio_5"]) == (12.0 - e1) / e1
+        assert pytest.approx(res.loc[2, "ema_ratio_5"]) == (14.0 - e2) / e2
 
     def test_macd(self):
         """Test MACD, signal, and histogram relationship."""
@@ -299,30 +302,35 @@ class TestMomentumCalculations:
         for c in changes:
             prices.append(prices[-1] + c)
 
-        n = len(prices)  # 16 candles
+        # 1. Direct function call tests pure close-to-close Wilder formula without open series
+        res_pure = _compute_rsi(pd.Series(prices), period=14)
+        assert res_pure.iloc[:14].isna().all()
+        expected_rsi_14 = 700.0 / 11.0
+        assert pytest.approx(res_pure.iloc[14], rel=1e-5) == expected_rsi_14
+        expected_rsi_15 = 100.0 * 119.0 / 171.0
+        assert pytest.approx(res_pure.iloc[15], rel=1e-5) == expected_rsi_15
+
+        # 2. Pipeline integration: candle 0 uses (close - open) as its movement.
+        # When 15 candles are provided with candle 0 having (close - open) = 2.0,
+        # candles 0..13 supply the exact same 14 changes, initializing at index 13.
+        n = 15
+        close_seq = prices[1:]  # starts at 102.0, 15 prices
+        open_seq = [100.0] + close_seq[:-1]  # candle 0: close(102) - open(100) = 2.0
         df = pd.DataFrame(
             {
                 "timestamp": pd.date_range("2026-01-05 14:30:00", periods=n, freq="5min", tz="UTC"),
-                "open": prices,
-                "high": [p + 0.5 for p in prices],
-                "low": [p - 0.5 for p in prices],
-                "close": prices,
+                "open": open_seq,
+                "high": [max(o, c) + 0.5 for o, c in zip(open_seq, close_seq)],
+                "low": [min(o, c) - 0.5 for o, c in zip(open_seq, close_seq)],
+                "close": close_seq,
                 "volume": [1000.0] * n,
-                "vwap": prices,
+                "vwap": close_seq,
             }
         )
-        res = generate_features(df, reset_daily=False)
-
-        # First 14 candles (indices 0..13) are warm-up NaNs
-        assert res["rsi_14"].iloc[:14].isna().all()
-
-        # Index 14: first 14-period simple average
-        expected_rsi_14 = 700.0 / 11.0
-        assert pytest.approx(res.loc[14, "rsi_14"], rel=1e-5) == expected_rsi_14
-
-        # Index 15: recursive Wilder update
-        expected_rsi_15 = 100.0 * 119.0 / 171.0
-        assert pytest.approx(res.loc[15, "rsi_14"], rel=1e-5) == expected_rsi_15
+        res_pipeline = generate_features(df, reset_daily=False)
+        assert res_pipeline["rsi_14"].iloc[:13].isna().all()
+        assert pytest.approx(res_pipeline.loc[13, "rsi_14"], rel=1e-5) == expected_rsi_14
+        assert pytest.approx(res_pipeline.loc[14, "rsi_14"], rel=1e-5) == expected_rsi_15
 
     def test_rate_of_change(self):
         prices = [100.0, 102.0, 104.0, 106.0, 108.0, 110.0]
@@ -341,6 +349,196 @@ class TestMomentumCalculations:
         # ROC 5 at index 5: (110 - 100) / 100 * 100 = 10.0%
         assert np.isnan(res.loc[4, "roc_5"])
         assert pytest.approx(res.loc[5, "roc_5"]) == 10.0
+
+    def test_rsi_overnight_gap_uses_close_minus_open(self):
+        """RSI must use (close - open) on session open candle, avoiding overnight gap distortion."""
+        # Session 1: 15 candles of steady rising prices: 100, 101, ..., 114
+        # Candle 0 open = 99.0, close = 100.0 (delta = +1.0)
+        # Changes on Day 1: all 15 candles have delta = +1.0 -> AvgGain = 1.0, AvgLoss = 0.0
+        # RSI at candles 13 and 14 is 100.0.
+        ts_day1 = pd.date_range("2026-01-05 14:30:00", periods=15, freq="5min", tz="UTC")
+        prices_day1 = [100.0 + float(i) for i in range(15)]
+        open_day1 = [99.0] + prices_day1[:-1]
+
+        # Session 2: 2 candles on Jan 6
+        # Candle 15 (Day 2 candle 0):
+        # Overnight gap up: Day 1 last close was 114.0.
+        # Day 2 candle 0: open = 130.0, close = 130.5.
+        # If naive close-to-close was used: delta = 130.5 - 114.0 = +16.5
+        # With gap isolation: delta = close - open = 130.5 - 130.0 = +0.5!
+        # Candle 16 (Day 2 candle 1):
+        # open = 130.5, close = 129.5 (intraday loss: delta = 129.5 - 130.5 = -1.0)
+        ts_day2 = pd.date_range("2026-01-06 14:30:00", periods=2, freq="5min", tz="UTC")
+        all_ts = list(ts_day1) + list(ts_day2)
+        all_open = open_day1 + [130.0, 130.5]
+        all_close = prices_day1 + [130.5, 129.5]
+        all_high = [max(o, c) + 0.5 for o, c in zip(all_open, all_close)]
+        all_low = [min(o, c) - 0.5 for o, c in zip(all_open, all_close)]
+        all_vol = [1000.0] * len(all_close)
+        all_vwap = all_close
+
+        df = pd.DataFrame(
+            {
+                "timestamp": all_ts,
+                "open": all_open,
+                "high": all_high,
+                "low": all_low,
+                "close": all_close,
+                "volume": all_vol,
+                "vwap": all_vwap,
+            }
+        )
+        res = generate_features(df, reset_daily=False)
+
+        # Day 1 candle 13: 14 changes of +1.0 -> AvgGain = 1.0, AvgLoss = 0.0 -> RSI = 100.0
+        assert pytest.approx(res.loc[13, "rsi_14"]) == 100.0
+        # Day 1 candle 14: 15 changes of +1.0 -> AvgGain = 1.0, AvgLoss = 0.0 -> RSI = 100.0
+        assert pytest.approx(res.loc[14, "rsi_14"]) == 100.0
+
+        # Day 2 candle 0 (index 15):
+        # Delta should be +0.5 (close - open = 130.5 - 130.0), NOT +16.5 (close - prev_close)
+        # AvgGain_15 = (1.0 * 13 + 0.5) / 14 = 13.5 / 14
+        # AvgLoss_15 = (0.0 * 13 + 0.0) / 14 = 0.0
+        # Since AvgLoss is still 0, RSI_15 is 100.0
+        assert pytest.approx(res.loc[15, "rsi_14"]) == 100.0
+
+        # Day 2 candle 1 (index 16):
+        # Delta is -1.0 (loss = 1.0, gain = 0.0)
+        # AvgGain_16 = ((13.5 / 14) * 13 + 0.0) / 14 = 175.5 / 196
+        # AvgLoss_16 = (0.0 * 13 + 1.0) / 14 = 1.0 / 14 = 14 / 196
+        # RSI_16 = 100.0 * (175.5 / (175.5 + 14.0)) = 100.0 * 175.5 / 189.5 ~ 92.612137
+        expected_rsi_16 = 100.0 * 175.5 / 189.5
+        assert pytest.approx(res.loc[16, "rsi_14"], rel=1e-5) == expected_rsi_16
+
+        # Contrast with naive RSI without open_series:
+        # Naive delta at index 15 would be +16.5:
+        # AvgGain_15_naive = (13.0 + 16.5) / 14 = 29.5 / 14
+        # AvgGain_16_naive = ((29.5 / 14) * 13 + 0) / 14 = 383.5 / 196
+        # AvgLoss_16_naive = 14 / 196
+        # Naive RSI_16 = 100.0 * 383.5 / (383.5 + 14) = 100.0 * 383.5 / 397.5 ~ 96.478%
+        # The isolated RSI is ~92.61%, proving that the +16.5 overnight gap was NOT used!
+        naive_rsi = _compute_rsi(pd.Series(all_close), period=14)
+        assert pytest.approx(naive_rsi.iloc[16], rel=1e-5) == 100.0 * 383.5 / 397.5
+        assert abs(res.loc[16, "rsi_14"] - naive_rsi.iloc[16]) > 3.0
+
+    def test_rsi_session_reset_mode_includes_first_candle(self):
+        """In session-reset mode (reset_daily=True), Day 2 candle 0's (close - open) movement
+        must be included in Day 2 RSI initialization, while isolating large overnight gaps."""
+        # Day 1: 15 candles of steady rising prices: 100, 101, ..., 114
+        # Candle 0 open = 99.0, close = 100.0 (+1.0 delta)
+        # Candles 1..14 deltas are all +1.0
+        ts_day1 = pd.date_range("2026-01-05 14:30:00", periods=15, freq="5min", tz="UTC")
+        prices_day1 = [100.0 + float(i) for i in range(15)]
+        open_day1 = [99.0] + prices_day1[:-1]
+
+        # Day 2: 15 candles on Jan 6
+        # Large overnight gap: Day 1 last close = 114.0. Day 2 opens at 150.0 (+36.0 overnight jump!).
+        # Day 2 candle 0: open = 150.0, close = 148.0 (intraday drop of -2.0!)
+        # Day 2 candles 1..14: each candle rises by +1.0 (close[1] = 149.0, ..., close[14] = 162.0)
+        ts_day2 = pd.date_range("2026-01-06 14:30:00", periods=15, freq="5min", tz="UTC")
+        prices_day2 = [148.0] + [148.0 + float(i) for i in range(1, 15)]
+        open_day2 = [150.0] + prices_day2[:-1]
+
+        all_ts = list(ts_day1) + list(ts_day2)
+        all_open = open_day1 + open_day2
+        all_close = prices_day1 + prices_day2
+        all_high = [max(o, c) + 0.5 for o, c in zip(all_open, all_close)]
+        all_low = [min(o, c) - 0.5 for o, c in zip(all_open, all_close)]
+        all_vol = [1000.0] * len(all_close)
+        all_vwap = all_close
+
+        df = pd.DataFrame(
+            {
+                "timestamp": all_ts,
+                "open": all_open,
+                "high": all_high,
+                "low": all_low,
+                "close": all_close,
+                "volume": all_vol,
+                "vwap": all_vwap,
+            }
+        )
+        res = generate_features(df, reset_daily=True)
+
+        # Day 1:
+        # Indices 0..12 are warm-up NaNs
+        assert res["rsi_14"].iloc[:13].isna().all()
+        # Index 13: initialized with 14 changes of +1.0 -> AvgGain = 1.0, AvgLoss = 0.0 -> RSI = 100.0
+        assert pytest.approx(res.loc[13, "rsi_14"]) == 100.0
+        assert pytest.approx(res.loc[14, "rsi_14"]) == 100.0
+
+        # Day 2:
+        # Day 2 indices are 15..29.
+        # Warm-up for Day 2 is the first 13 candles of Day 2: indices 15..27 (13 candles) must be NaN.
+        assert res["rsi_14"].iloc[15:28].isna().all()
+
+        # Day 2 candle 13 (index 28):
+        # Initialized with Day 2's first 14 movements:
+        # Delta 0 (Day 2 candle 0): close(148) - open(150) = -2.0 (loss = 2.0, gain = 0.0)
+        # Deltas 1..13: each is +1.0 (gain = 1.0, loss = 0.0)
+        # Sum of gains = 13.0 -> AvgGain = 13.0 / 14
+        # Sum of losses = 2.0 -> AvgLoss = 2.0 / 14
+        # Day 2 RSI at index 28 = 100.0 * (13/14) / (13/14 + 2/14) = 100.0 * 13 / 15 = 86.66667%
+        expected_day2_rsi_13 = 100.0 * 13.0 / 15.0
+        assert pytest.approx(res.loc[28, "rsi_14"], rel=1e-5) == expected_day2_rsi_13
+
+        # Day 2 candle 14 (index 29):
+        # 15th delta is +1.0 (gain = 1.0, loss = 0.0)
+        # AvgGain = (13/14 * 13 + 1.0) / 14 = 183 / 196
+        # AvgLoss = (2/14 * 13 + 0.0) / 14 = 26 / 196
+        # Day 2 RSI at index 29 = 100.0 * 183 / (183 + 26) = 18300 / 209 ~ 87.5598%
+        expected_day2_rsi_14 = 100.0 * 183.0 / 209.0
+        assert pytest.approx(res.loc[29, "rsi_14"], rel=1e-5) == expected_day2_rsi_14
+
+    def test_rsi_continuous_mode_includes_first_candle(self):
+        """In continuous mode (reset_daily=False), Day 2 candle 0's (close - open) movement
+        is incorporated into the recursive Wilder update without overnight gap contamination."""
+        ts_day1 = pd.date_range("2026-01-05 14:30:00", periods=15, freq="5min", tz="UTC")
+        prices_day1 = [100.0 + float(i) for i in range(15)]
+        open_day1 = [99.0] + prices_day1[:-1]
+
+        # Day 2: starts at index 15 with open=150.0, close=148.0 (overnight gap: +34 vs prev close 114)
+        ts_day2 = pd.date_range("2026-01-06 14:30:00", periods=2, freq="5min", tz="UTC")
+        prices_day2 = [148.0, 149.0]
+        open_day2 = [150.0, 148.0]
+
+        all_ts = list(ts_day1) + list(ts_day2)
+        all_open = open_day1 + open_day2
+        all_close = prices_day1 + prices_day2
+        all_high = [max(o, c) + 0.5 for o, c in zip(all_open, all_close)]
+        all_low = [min(o, c) - 0.5 for o, c in zip(all_open, all_close)]
+        all_vol = [1000.0] * len(all_close)
+        all_vwap = all_close
+
+        df = pd.DataFrame(
+            {
+                "timestamp": all_ts,
+                "open": all_open,
+                "high": all_high,
+                "low": all_low,
+                "close": all_close,
+                "volume": all_vol,
+                "vwap": all_vwap,
+            }
+        )
+        res = generate_features(df, reset_daily=False)
+
+        # Day 1 candle 14: AvgGain = 1.0, AvgLoss = 0.0 -> RSI = 100.0
+        assert pytest.approx(res.loc[14, "rsi_14"]) == 100.0
+
+        # Day 2 candle 0 (index 15):
+        # Delta must be close - open = 148.0 - 150.0 = -2.0 (gain = 0.0, loss = 2.0)
+        # AvgGain_15 = (1.0 * 13 + 0.0) / 14 = 13 / 14
+        # AvgLoss_15 = (0.0 * 13 + 2.0) / 14 = 2 / 14
+        # RSI_15 = 100.0 * (13/14) / (15/14) = 1300 / 15 ~ 86.6667%
+        expected_rsi_15 = 100.0 * 13.0 / 15.0
+        assert pytest.approx(res.loc[15, "rsi_14"], rel=1e-5) == expected_rsi_15
+
+        # If naive close-to-close was used, delta at 15 would be 148.0 - 114.0 = +34.0 (gain = 34.0, loss = 0.0)
+        # Naive RSI at 15 would be 100.0%
+        naive_rsi = _compute_rsi(pd.Series(all_close), period=14)
+        assert pytest.approx(naive_rsi.iloc[15]) == 100.0
+        assert abs(res.loc[15, "rsi_14"] - naive_rsi.iloc[15]) > 10.0
 
 
 class TestVolatilityCalculations:
@@ -415,10 +613,7 @@ class TestVolatilityCalculations:
         )
         res = generate_features(df, reset_daily=False)
 
-        # When price is flat, std = 0, bb_upper = bb_middle = bb_lower = 100.0
-        assert pytest.approx(res.loc[24, "bb_middle"]) == 100.0
-        assert pytest.approx(res.loc[24, "bb_upper"]) == 100.0
-        assert pytest.approx(res.loc[24, "bb_lower"]) == 100.0
+        # When price is flat, std = 0, bb_width = 0.0
         assert pytest.approx(res.loc[24, "bb_width"]) == 0.0
         # Position with zero band width should default safely to 0.5 (center)
         assert pytest.approx(res.loc[24, "bb_position"]) == 0.5
@@ -437,9 +632,95 @@ class TestVolumeAndVWAPCalculations:
         expected_ratio = df.loc[4, "volume"] / expected_vol_sma_5
         assert pytest.approx(res.loc[4, "volume_ratio_5"]) == expected_ratio
 
-        # Check vwap_distance: (close - vwap) / vwap
-        expected_vwap_dist = (df.loc[0, "close"] - df.loc[0, "vwap"]) / df.loc[0, "vwap"]
-        assert pytest.approx(res.loc[0, "vwap_distance"]) == expected_vwap_dist
+        # Check vwap_distance at candle 0 of session:
+        # Uses bar_vwap * volume / volume = bar_vwap
+        # close: 201.0, bar_vwap: 200.5 -> distance: (201.0 - 200.5) / 200.5
+        expected_vwap_dist_0 = (201.0 - 200.5) / 200.5
+        assert pytest.approx(res.loc[0, "vwap_distance"]) == expected_vwap_dist_0
+
+        # Check vwap_distance at row 1:
+        # bar_vwap: [200.5, 201.5], volume: [1000.0, 1100.0], close: [201.0, 202.0]
+        cum_pv = 200.5 * 1000.0 + 201.5 * 1100.0
+        cum_vol = 1000.0 + 1100.0
+        session_vwap_1 = cum_pv / cum_vol
+        expected_vwap_dist_1 = (202.0 - session_vwap_1) / session_vwap_1
+        assert pytest.approx(res.loc[1, "vwap_distance"]) == expected_vwap_dist_1
+
+    def test_session_vwap_uses_bar_vwap_and_resets(self):
+        """Cumulative session VWAP must use bar_vwap * volume and reset at session boundaries."""
+        # 2 sessions: Day 1 (2 candles), Day 2 (2 candles)
+        df = pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(
+                    [
+                        "2026-01-05 14:30:00+00:00",  # Day 1 candle 0 (09:30 ET)
+                        "2026-01-05 14:35:00+00:00",  # Day 1 candle 1 (09:35 ET)
+                        "2026-01-06 14:30:00+00:00",  # Day 2 candle 0 (09:30 ET)
+                        "2026-01-06 14:35:00+00:00",  # Day 2 candle 1 (09:35 ET)
+                    ]
+                ),
+                "open": [100.0, 102.0, 110.0, 112.0],
+                "high": [103.0, 105.0, 113.0, 115.0],
+                "low": [99.0, 101.0, 109.0, 111.0],
+                "close": [102.0, 104.0, 111.0, 114.0],
+                "volume": [1000.0, 2000.0, 500.0, 1500.0],
+                "vwap": [101.0, 103.0, 110.5, 113.0],
+            }
+        )
+        res = generate_features(df, reset_daily=False)
+
+        # Day 1 candle 0:
+        # session_vwap = 101.0 * 1000 / 1000 = 101.0
+        # vwap_distance = (102.0 - 101.0) / 101.0 = 1.0 / 101.0
+        assert pytest.approx(res.loc[0, "vwap_distance"]) == 1.0 / 101.0
+
+        # Day 1 candle 1:
+        # cum_pv = 101.0 * 1000 + 103.0 * 2000 = 101000 + 206000 = 307000
+        # cum_vol = 1000 + 2000 = 3000
+        # session_vwap = 307000 / 3000 = 102.33333333333333
+        expected_d1_1 = (104.0 - 307.0 / 3.0) / (307.0 / 3.0)
+        assert pytest.approx(res.loc[1, "vwap_distance"]) == expected_d1_1
+
+        # Day 2 candle 0: RESET
+        # session_vwap = 110.5 * 500 / 500 = 110.5 (NOT carrying over Day 1)
+        # vwap_distance = (111.0 - 110.5) / 110.5 = 0.5 / 110.5
+        assert pytest.approx(res.loc[2, "vwap_distance"]) == 0.5 / 110.5
+
+        # Day 2 candle 1:
+        # cum_pv = 110.5 * 500 + 113.0 * 1500 = 55250 + 169500 = 224750
+        # cum_vol = 500 + 1500 = 2000
+        # session_vwap = 224750 / 2000 = 112.375
+        expected_d2_1 = (114.0 - 112.375) / 112.375
+        assert pytest.approx(res.loc[3, "vwap_distance"]) == expected_d2_1
+
+    def test_session_vwap_safe_fallback_on_invalid_vwap(self):
+        """When bar VWAP is NaN, zero, or negative, session VWAP falls back safely to close."""
+        df = pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(
+                    [
+                        "2026-01-05 14:30:00+00:00",
+                        "2026-01-05 14:35:00+00:00",
+                        "2026-01-05 14:40:00+00:00",
+                    ]
+                ),
+                "open": [100.0, 102.0, 105.0],
+                "high": [101.0, 103.0, 106.0],
+                "low": [99.0, 101.0, 104.0],
+                "close": [100.0, 102.0, 105.0],
+                "volume": [1000.0, 1000.0, 1000.0],
+                "vwap": [np.nan, 0.0, -5.0],  # All invalid
+            }
+        )
+        res = generate_features(df, reset_daily=False)
+        # All invalid bar VWAPs fall back to close prices
+        # Row 0: fallback to close 100.0, cum_pv = 100 * 1000, session_vwap = 100.0 -> distance = 0.0
+        assert pytest.approx(res.loc[0, "vwap_distance"]) == 0.0
+        # Row 1: close 102.0 fallback, cum_pv = 100 * 1000 + 102 * 1000 = 202000, cum_vol = 2000 -> session_vwap = 101.0
+        # distance = (102 - 101) / 101 = 1 / 101
+        assert pytest.approx(res.loc[1, "vwap_distance"]) == 1.0 / 101.0
+        assert not np.isinf(res["vwap_distance"]).any()
+        assert not res["vwap_distance"].isna().any()
 
 
 class TestTimeFeatures:
@@ -460,8 +741,8 @@ class TestTimeFeatures:
 
 
 class TestSessionHandling:
-    def test_continuous_mode_carries_across_days(self):
-        """In continuous mode (reset_daily=False), Day 2 candle 0 computes return against Day 1 last candle."""
+    def test_continuous_mode_prevents_overnight_return_contamination(self):
+        """In continuous mode (reset_daily=False), Day 2 candle 0 must NOT compute return against Day 1 last candle."""
         # Day 1: 2026-01-05 20:55 UTC (15:55 ET, close=200)
         # Day 2: 2026-01-06 14:30 UTC (09:30 ET, close=204)
         df = pd.DataFrame(
@@ -478,9 +759,10 @@ class TestSessionHandling:
             }
         )
         res = generate_features(df, reset_daily=False)
-        # Day 2 candle 0 computes return against Day 1 last candle (204 - 200) / 200 = +2%
-        assert pytest.approx(res.loc[1, "return_1"]) == 0.02
-        assert pytest.approx(res.loc[1, "price_change"]) == 4.0
+        # Day 2 candle 0 return must be NaN (session-isolated, no overnight jump)
+        assert np.isnan(res.loc[1, "return_1"])
+        assert np.isnan(res.loc[1, "price_change"])
+        assert np.isnan(res.loc[1, "log_return_1"])
 
     def test_session_reset_mode_isolates_days(self):
         """In session-reset mode (reset_daily=True), Day 2 candle 0 has NaN return_1 and fresh warm-up."""
@@ -501,6 +783,28 @@ class TestSessionHandling:
         # Day 2 candle 0 must NOT use Day 1 data
         assert np.isnan(res.loc[1, "return_1"])
         assert np.isnan(res.loc[1, "price_change"])
+        assert np.isnan(res.loc[1, "log_return_1"])
+
+    def test_session_vwap_resets_at_new_session(self):
+        """Cumulative session VWAP must reset price-volume and volume sums at session boundary."""
+        df = pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(
+                    ["2026-01-05 20:55:00+00:00", "2026-01-06 14:30:00+00:00"]
+                ),
+                "open": [100.0, 200.0],
+                "high": [101.0, 201.0],
+                "low": [99.0, 199.0],
+                "close": [100.0, 200.0],
+                "volume": [1000.0, 500.0],
+                "vwap": [100.0, 200.0],
+            }
+        )
+        res = generate_features(df, reset_daily=False)
+        # Distance on Day 1 is 0.0
+        assert pytest.approx(res.loc[0, "vwap_distance"]) == 0.0
+        # Distance on Day 2 candle 0 must be 0.0 because VWAP reset to Day 2's first candle
+        assert pytest.approx(res.loc[1, "vwap_distance"]) == 0.0
 
 
 class TestSafetyAndImmutability:
@@ -572,8 +876,8 @@ class TestSafetyAndImmutability:
         assert counts["return_1"] == 1
         assert counts["return_2"] == 2
         assert counts["return_3"] == 3
-        assert counts["sma_5"] == 4
-        assert counts["sma_20"] == 19
+        assert counts["sma_ratio_5"] == 4
+        assert counts["sma_ratio_20"] == 19
         assert counts["candle_body"] == 0
 
     def test_zero_denominators_without_runtime_warnings(self):

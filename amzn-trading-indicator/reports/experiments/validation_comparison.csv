@@ -1,0 +1,6 @@
+model,split,accuracy,precision,recall,f1_score,roc_auc,n_samples,n_positive,n_negative
+DummyClassifier (majority),val,0.496511,0.0,0.0,0.0,,2866,1443,1423
+LogisticRegression,val,0.524424,0.535461,0.418572,0.469856,0.528313,2866,1443,1423
+RandomForest,val,0.493022,0.496148,0.446292,0.469901,0.494443,2866,1443,1423
+HistGradientBoosting,val,0.505932,0.509568,0.498267,0.503854,0.506373,2866,1443,1423
+LightGBM,val,0.491626,0.495132,0.493416,0.494273,0.491664,2866,1443,1423

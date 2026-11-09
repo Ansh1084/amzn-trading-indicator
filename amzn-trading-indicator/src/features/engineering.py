@@ -8,28 +8,25 @@ Key design principles:
     No future information, centered rolling windows, or look-ahead biases.
   - No target leakage: Target labels or future close prices are never computed or
     referenced in this module.
+  - Relative & stationary price features: All moving average and price-level indicators
+    are expressed as relative percentage ratios: (close - MA) / MA. Raw nominal price
+    levels (which cause covariate shift across regimes) are excluded from model inputs.
+  - Clean feature space: Exact duplicates (bb_middle == sma_20, volume_ratio == volume_ratio_20)
+    are eliminated.
+  - Cumulative session VWAP: VWAP is calculated as the cumulative session-anchored
+    volume-weighted average price using bar_vwap * volume (falling back safely to close
+    if missing/invalid) divided by cumulative volume, reset at each trading session open.
+    vwap_distance is computed relative to this session VWAP: (close - VWAP) / VWAP.
+  - Overnight gap isolation: Intraday return features (return_1, return_2, return_3,
+    log_return_1, price_change, volume_change) are strictly session-isolated, and RSI
+    calculates delta as (close - open) on session open candles, preventing overnight
+    inter-session gaps from being treated as normal adjacent 5-minute price movements.
   - Zero-division & infinity safety: Division operations are explicitly guarded to
     prevent inf, -inf, or ZeroDivisionError.
   - NaN transparency: Initial rolling warm-up periods produce NaN values naturally.
     NaNs are never bfilled or zero-filled. A missing-value inspection helper is provided.
-  - Configurable session handling: Supports both continuous rolling indicators
-    across overnight sessions and session-reset indicators (re-initialized at market open).
-  - Symmetry between training and live inference: Historical batch calculations and
-    live rolling-window inference execute identical code with identical column order.
-
-Session Handling Trade-Offs (Continuous vs. Session-Reset):
-  1. Continuous mode (`reset_daily=False`):
-     - Calculates indicators across session boundaries without resetting at market open.
-     - Pros: Avoids discarding the first ~20-35 candles of each trading day during warm-up;
-       maintains unbroken multi-candle momentum/trend context.
-     - Cons: Treats overnight gap intervals as adjacent 5-minute steps; moving averages
-       smooth across overnight price jumps.
-  2. Session-reset mode (`reset_daily=True`):
-     - Resets all rolling, lag, and exponential indicators at each day's market open.
-     - Pros: Intraday indicators reflect only today's price discovery and volume dynamics,
-       completely isolated from overnight price jumps.
-     - Cons: The first 14-35 candles of each trading session have NaN values due to warm-up,
-       reducing usable intraday observations if dropped.
+  - Configurable session handling: Supports continuous multi-candle indicator tracking
+    (reset_daily=False) and full session-reset mode (reset_daily=True).
 """
 
 from __future__ import annotations
@@ -57,7 +54,7 @@ REQUIRED_INPUT_COLUMNS: list[str] = [
 # ── Explicit Model Feature Columns ───────────────────────────────────────────
 
 FEATURE_COLUMNS: list[str] = [
-    # A. Price & return features
+    # A. Price & return features (session-isolated, no overnight gap contamination)
     "return_1",
     "return_2",
     "return_3",
@@ -68,13 +65,13 @@ FEATURE_COLUMNS: list[str] = [
     "upper_wick",
     "lower_wick",
     "body_to_range",
-    # B. Trend features
-    "sma_5",
-    "sma_10",
-    "sma_20",
-    "ema_5",
-    "ema_10",
-    "ema_20",
+    # B. Trend features (normalized relative ratios: (close - MA) / MA)
+    "sma_ratio_5",
+    "sma_ratio_10",
+    "sma_ratio_20",
+    "ema_ratio_5",
+    "ema_ratio_10",
+    "ema_ratio_20",
     "macd",
     "macd_signal",
     "macd_hist",
@@ -82,22 +79,18 @@ FEATURE_COLUMNS: list[str] = [
     "rsi_14",
     "roc_5",
     "roc_10",
-    # D. Volatility features
+    # D. Volatility features (normalized: position & width)
     "atr_14",
-    "bb_upper",
-    "bb_middle",
-    "bb_lower",
     "bb_width",
     "bb_position",
-    # E. Volume & VWAP features
+    # E. Volume & VWAP features (session-anchored cumulative VWAP)
     "volume_change",
     "volume_sma_5",
     "volume_sma_20",
     "volume_ratio_5",
     "volume_ratio_20",
-    "volume_ratio",
     "vwap_distance",
-    # F. Time features
+    # F. Time features (in America/New_York)
     "hour",
     "minute",
     "day_of_week",
@@ -149,7 +142,7 @@ def _safe_divide(
     n = np.asarray(num, dtype=float)
     d = np.asarray(den, dtype=float)
     out = np.full(n.shape, fill_value, dtype=float)
-    valid_mask = np.isfinite(n) & np.isfinite(d) & (d > min_den)
+    valid_mask = np.isfinite(n) & np.isfinite(d) & (np.abs(d) > min_den)
     np.divide(n, d, out=out, where=valid_mask)
     return out
 
@@ -165,17 +158,25 @@ def _apply_grouped_or_series(
     return series.groupby(group_col, group_keys=False).apply(func)
 
 
-def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
+def _compute_rsi(
+    series: pd.Series,
+    period: int = 14,
+    *,
+    open_series: pd.Series | None = None,
+    session_dates: pd.Series | Sequence | None = None,
+) -> pd.Series:
     """Compute mathematically correct Wilder's RSI on a price series.
 
     Formula and Initialization:
-      1. Price changes: Delta[t] = close[t] - close[t-1]
+      1. Price changes: Delta[t] = close[t] - close[t-1] for intraday transitions.
+         For the first candle of each trading session (when open_series is provided),
+         Delta[t] = close[t] - open[t], including candle 0 of each session in RSI initialization
+         and preventing overnight price gaps from being treated as normal 5-minute price movements.
       2. Gains and Losses: Gain = max(Delta, 0), Loss = max(-Delta, 0)
-      3. First 14 valid price changes (from 15 prices) initialize average gain and loss
-         using their simple arithmetic mean:
-           AvgGain[14] = sum(Gain[1..14]) / 14
-           AvgLoss[14] = sum(Loss[1..14]) / 14
-      4. For subsequent candles t > 14, apply Wilder's recursive smoothing:
+      3. First 14 valid price changes initialize average gain and loss using their simple arithmetic mean:
+           AvgGain[13] = sum(Gain[0..13]) / 14 (when open_series is provided, starting from candle 0)
+           AvgLoss[13] = sum(Loss[0..13]) / 14
+      4. For subsequent candles t >= 14, apply Wilder's recursive smoothing:
            AvgGain[t] = (AvgGain[t-1] * 13 + Gain[t]) / 14
            AvgLoss[t] = (AvgLoss[t-1] * 13 + Loss[t]) / 14
       5. RSI calculation:
@@ -187,11 +188,29 @@ def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     """
     n = len(series)
     out = np.full(n, np.nan, dtype=float)
-    if n <= period:
+    if n < period:
         return pd.Series(out, index=series.index, dtype=float)
 
     prices = series.to_numpy(dtype=float)
-    deltas = np.diff(prices)  # length n - 1
+
+    if open_series is not None:
+        opens = np.asarray(open_series, dtype=float)
+        deltas = np.empty(n, dtype=float)
+        # First candle of the session uses (close - open)
+        deltas[0] = prices[0] - opens[0]
+        # Subsequent candles default to (close[t] - close[t-1])
+        deltas[1:] = prices[1:] - prices[:-1]
+        # If multi-session dates are present, isolate overnight gaps at new session opens
+        if session_dates is not None:
+            dates = np.asarray(session_dates)
+            if len(dates) == n and n > 1:
+                session_starts = dates[1:] != dates[:-1]
+                deltas[1:][session_starts] = prices[1:][session_starts] - opens[1:][session_starts]
+        start_candle_offset = 0
+    else:
+        # Standard close-to-close deltas without open prices (n - 1 transitions)
+        deltas = np.diff(prices)
+        start_candle_offset = 1
 
     valid_deltas = np.isfinite(deltas)
     valid_indices = np.where(valid_deltas)[0]
@@ -218,12 +237,12 @@ def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
             return 0.0
         return 100.0 * ag / total
 
-    init_candle_idx = first_14_idx[-1] + 1
+    init_candle_idx = first_14_idx[-1] + start_candle_offset
     out[init_candle_idx] = _calc_rsi_val(avg_gain, avg_loss)
 
     p_minus_1 = period - 1
     for d_idx in range(first_14_idx[-1] + 1, len(deltas)):
-        candle_idx = d_idx + 1
+        candle_idx = d_idx + start_candle_offset
         d = deltas[d_idx]
         if not np.isfinite(d):
             out[candle_idx] = np.nan
@@ -319,9 +338,10 @@ def generate_features(
     df : pd.DataFrame
         Input DataFrame containing at least: timestamp, open, high, low, close, volume, vwap.
     reset_daily : bool
-        If False (default), indicators and rolling windows run continuously across sessions.
-        If True, indicators and returns reset at the beginning of each trading day
-        (using America/New_York local date).
+        If False (default), indicators and rolling windows run continuously across sessions
+        while short-term return features remain session-isolated to avoid overnight gap contamination.
+        If True, all indicators, rolling windows, and returns reset at the beginning of each
+        trading day (using America/New_York local date).
     tz : str
         Timezone for time-of-day features and session grouping (default "America/New_York").
 
@@ -346,8 +366,6 @@ def generate_features(
         raise ValueError(f"Input DataFrame is missing required column(s): {missing_cols}")
 
     # ── Strict Timestamp Validation ──────────────────────────────────────────
-    # Reject invalid, unparseable, duplicate, or unsorted timestamps.
-    # Silent sorting is strictly forbidden to preserve input order and index integrity.
     try:
         ts = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
     except Exception as err:
@@ -373,18 +391,18 @@ def generate_features(
 
     # Timezone conversion for time-of-day features and session grouping
     ts_local = ts.dt.tz_convert(tz)
-    group_col = ts_local.dt.date if reset_daily else None
+    session_col = ts_local.dt.date
+    group_col = session_col if reset_daily else None
 
     open_p = out["open"].astype(float)
     high_p = out["high"].astype(float)
     low_p = out["low"].astype(float)
     close_p = out["close"].astype(float)
     volume_p = out["volume"].astype(float)
-    vwap_p = out["vwap"].astype(float)
 
     # ── A. Price and Return Features ─────────────────────────────────────────
-
-    # Shifted closes (session-isolated if reset_daily=True)
+    # Returns are ALWAYS isolated to each trading session so that overnight gaps
+    # are NEVER treated as normal adjacent 5-minute returns.
     def _calc_returns(s: pd.Series) -> pd.DataFrame:
         c1 = s.shift(1).to_numpy(dtype=float)
         c2 = s.shift(2).to_numpy(dtype=float)
@@ -417,11 +435,7 @@ def generate_features(
             index=s.index,
         )
 
-    if group_col is not None:
-        ret_df = close_p.groupby(group_col, group_keys=False).apply(_calc_returns)
-    else:
-        ret_df = _calc_returns(close_p)
-
+    ret_df = close_p.groupby(session_col, group_keys=False).apply(_calc_returns)
     out["return_1"] = ret_df["return_1"]
     out["return_2"] = ret_df["return_2"]
     out["return_3"] = ret_df["return_3"]
@@ -442,14 +456,32 @@ def generate_features(
         min_den=1e-12,
     )
 
-    # ── B. Trend Features (SMA, EMA, MACD) ───────────────────────────────────
+    # ── B. Trend Features (SMA/EMA Ratios, MACD) ─────────────────────────────
+    # Replaces raw nominal price levels with scale-free percentage ratios:
+    # ratio = (close - moving_average) / moving_average
+    close_arr = close_p.to_numpy(dtype=float)
 
     for span in [5, 10, 20]:
-        out[f"sma_{span}"] = _apply_grouped_or_series(
+        sma_val = _apply_grouped_or_series(
             close_p, group_col, lambda s, w=span: s.rolling(w, min_periods=w).mean()
         )
-        out[f"ema_{span}"] = _apply_grouped_or_series(
+        sma_arr = sma_val.to_numpy(dtype=float)
+        out[f"sma_ratio_{span}"] = _safe_divide(
+            close_arr - sma_arr,
+            sma_arr,
+            fill_value=np.nan,
+            min_den=1e-12,
+        )
+
+        ema_val = _apply_grouped_or_series(
             close_p, group_col, lambda s, sp=span: s.ewm(span=sp, adjust=False).mean()
+        )
+        ema_arr = ema_val.to_numpy(dtype=float)
+        out[f"ema_ratio_{span}"] = _safe_divide(
+            close_arr - ema_arr,
+            ema_arr,
+            fill_value=np.nan,
+            min_den=1e-12,
         )
 
     # MACD (12, 26, 9)
@@ -469,9 +501,23 @@ def generate_features(
 
     # ── C. Momentum Features (RSI 14, ROC 5, ROC 10) ─────────────────────────
 
-    out["rsi_14"] = _apply_grouped_or_series(
-        close_p, group_col, lambda s: _compute_rsi(s, period=14)
-    )
+    if group_col is not None:
+        def _calc_grp_rsi(grp: pd.DataFrame) -> pd.Series:
+            return _compute_rsi(
+                grp["close"],
+                period=14,
+                open_series=grp["open"],
+                session_dates=session_col.loc[grp.index],
+            )
+
+        out["rsi_14"] = out.groupby(group_col, group_keys=False).apply(_calc_grp_rsi)
+    else:
+        out["rsi_14"] = _compute_rsi(
+            close_p,
+            period=14,
+            open_series=open_p,
+            session_dates=session_col,
+        )
 
     for p in [5, 10]:
 
@@ -494,7 +540,8 @@ def generate_features(
     else:
         out["atr_14"] = _compute_atr(high_p, low_p, close_p, period=14)
 
-    # Bollinger Bands (20-period, 2 std)
+    # Bollinger Bands (20-period, 2 std):
+    # Retain normalized width and position; omit absolute price levels bb_upper, bb_middle, bb_lower.
     bb_mid = _apply_grouped_or_series(
         close_p, group_col, lambda s: s.rolling(20, min_periods=20).mean()
     )
@@ -505,9 +552,6 @@ def generate_features(
     bb_low = bb_mid - 2.0 * bb_std
     bb_diff = bb_up - bb_low
 
-    out["bb_upper"] = bb_up
-    out["bb_middle"] = bb_mid
-    out["bb_lower"] = bb_low
     out["bb_width"] = _safe_divide(
         bb_diff.to_numpy(dtype=float),
         bb_mid.to_numpy(dtype=float),
@@ -518,7 +562,6 @@ def generate_features(
     # Bollinger Band position (%B)
     bb_pos = np.full(len(close_p), np.nan, dtype=float)
     diff_arr = bb_diff.to_numpy(dtype=float)
-    close_arr = close_p.to_numpy(dtype=float)
     low_arr = bb_low.to_numpy(dtype=float)
     mask_calc = np.isfinite(diff_arr) & (diff_arr > 1e-12)
     np.divide(close_arr - low_arr, diff_arr, out=bb_pos, where=mask_calc)
@@ -540,7 +583,8 @@ def generate_features(
         out_vc[zero_to_zero] = 0.0
         return pd.Series(out_vc, index=s.index, dtype=float)
 
-    out["volume_change"] = _apply_grouped_or_series(volume_p, group_col, _calc_vol_change)
+    # Volume change isolated to session to prevent overnight volume distortion
+    out["volume_change"] = volume_p.groupby(session_col, group_keys=False).apply(_calc_vol_change)
 
     out["volume_sma_5"] = _apply_grouped_or_series(
         volume_p, group_col, lambda s: s.rolling(5, min_periods=5).mean()
@@ -561,19 +605,44 @@ def generate_features(
     mask_v20_zero = np.isfinite(v_sma20_arr) & (v_sma20_arr <= 1e-12)
     out.loc[mask_v20_zero, "volume_ratio_20"] = 0.0
 
-    # volume_ratio default alias to 20-period
-    out["volume_ratio"] = out["volume_ratio_20"]
+    # Cumulative session-anchored VWAP:
+    # Reset cumulative price-volume and volume sums at each new trading session (date).
+    # Uses 5-minute bar VWAP multiplied by volume (falling back safely to close if bar VWAP is missing/invalid):
+    # VWAP = cumulative(bar_vwap * volume) / cumulative(volume)
+    # vwap_distance = (close - VWAP) / VWAP
+    bar_vwap_arr = out["vwap"].to_numpy(dtype=float)
+    # Safe bar VWAP: fallback to close if bar_vwap is NaN, infinite, or non-positive
+    safe_bar_vwap = np.where(
+        np.isfinite(bar_vwap_arr) & (bar_vwap_arr > 0),
+        bar_vwap_arr,
+        close_arr,
+    )
+    pv_arr = safe_bar_vwap * v_arr
+    pv_series = pd.Series(pv_arr, index=out.index)
+    cum_pv = pv_series.groupby(session_col, group_keys=False).cumsum()
+    cum_vol = volume_p.groupby(session_col, group_keys=False).cumsum()
 
-    # VWAP distance: (close - vwap) / vwap
-    vwap_arr = vwap_p.to_numpy(dtype=float)
-    out["vwap_distance"] = _safe_divide(
-        close_arr - vwap_arr,
-        vwap_arr,
+    session_vwap = _safe_divide(
+        cum_pv.to_numpy(dtype=float),
+        cum_vol.to_numpy(dtype=float),
         fill_value=np.nan,
         min_den=1e-12,
     )
-    mask_vwap_zero = np.isfinite(vwap_arr) & (vwap_arr <= 1e-12)
-    out.loc[mask_vwap_zero, "vwap_distance"] = 0.0
+    # Fallback to close if cumulative volume is 0 or NaN
+    mask_no_vol = np.isnan(session_vwap)
+    if np.any(mask_no_vol):
+        session_vwap = np.where(mask_no_vol, close_arr, session_vwap)
+
+    diff_vwap = close_arr - session_vwap
+    out["vwap_distance"] = _safe_divide(
+        diff_vwap,
+        session_vwap,
+        fill_value=0.0,
+        min_den=1e-12,
+    )
+    # Mask floating-point residuals on candles where close == session_vwap
+    mask_exact_zero = np.abs(diff_vwap) < 1e-12
+    out.loc[mask_exact_zero, "vwap_distance"] = 0.0
 
     # ── F. Time Features (in America/New_York) ────────────────────────────────
 
