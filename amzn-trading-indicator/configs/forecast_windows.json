@@ -1,0 +1,23 @@
+{
+  "timezone": "America/New_York",
+  "break_rule": "5m_close_below_support",
+  "issuance_lead_minutes": 2,
+  "windows": [
+    {"id": "morning", "start": "09:30", "end": "12:30"},
+    {"id": "afternoon", "start": "12:30", "end": "15:30"}
+  ],
+  "support_lookback_sessions": 20,
+  "swing_left_bars": 2,
+  "swing_right_bars": 2,
+  "level_atr_distance": 3.0,
+  "minimum_calibration_samples": 30,
+  "scheduler": {
+    "enabled": true,
+    "poll_seconds": 15,
+    "advance_after_close_minutes": 5,
+    "morning_update_delay_minutes": 2,
+    "comparison_delay_minutes": 2,
+    "retry_delays_seconds": [60, 300, 900],
+    "maximum_attempts": 4
+  }
+}
