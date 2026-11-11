@@ -1,0 +1,48 @@
+{
+  "n": 455,
+  "up_actual": 206,
+  "down_actual": 249,
+  "accuracy": 0.5384615384615384,
+  "precision_macro": 0.5308690090738297,
+  "recall_macro": 0.5301107341989317,
+  "f1_macro": 0.5294401544401545,
+  "f1_weighted": 0.5355976070261785,
+  "balanced_accuracy": 0.5301107341989317,
+  "mcc": 0.06097502856765213,
+  "up_precision": 0.489247311827957,
+  "up_recall": 0.441747572815534,
+  "up_f1": 0.4642857142857143,
+  "down_precision": 0.5724907063197026,
+  "down_recall": 0.6184738955823293,
+  "down_f1": 0.5945945945945946,
+  "confusion_matrix_labels_down_up": [
+    [
+      154,
+      95
+    ],
+    [
+      115,
+      91
+    ]
+  ],
+  "roc_auc": 0.5123601200920186,
+  "pr_auc_up": 0.46583819053157904,
+  "log_loss": 0.7136173184010154,
+  "brier_score_raw": 0.2592638749809736,
+  "majority_baseline_accuracy": 0.45274725274725275,
+  "majority_class_in_train": "UP",
+  "trade_n_nonoverlap": 228,
+  "trade_cumulative_gross_return": 0.02305632936332236,
+  "trade_max_drawdown": -0.049442295414429016,
+  "trade_profit_factor": 1.098574622667689,
+  "trade_win_rate": 0.5394736842105263,
+  "trade_average_strategy_return": 0.00010571172355938556,
+  "trade_average_actual_return": -0.00023118233446145644,
+  "trade_average_absolute_return": 0.0022505177740122857,
+  "trade_correct_count": 123,
+  "artifact": "artifacts\\model_lightgbm.joblib",
+  "artifact_sha256": "f1f5330aafbe9022f1e97c83bf45e968d19a1dab06c020a953f2acd9d37b6aac",
+  "feature_count": 40,
+  "training_provenance_verified": false,
+  "note": "Same later-period score for context; artifact training cutoff is absent, so this is not an independently certified untouched benchmark."
+}

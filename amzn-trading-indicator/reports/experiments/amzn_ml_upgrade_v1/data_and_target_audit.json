@@ -1,0 +1,55 @@
+{
+  "path": "C:\\Users\\anshg\\Desktop\\SEM5\\Projects\\ML2 - Copy\\amzn-trading-indicator\\data\\processed\\AMZN_clean_20261110T010232.csv",
+  "sha256": "cca838242e41d9515ac59e6fb7e249c5bff3189a5f0e3928b22c97913138d00a",
+  "source_rows": 21456,
+  "rows": 21420,
+  "rows_outside_calendar_rth_removed": 36,
+  "dataset_start_utc": "2025-10-06T13:30:00+00:00",
+  "dataset_end_utc": "2026-11-09T20:55:00+00:00",
+  "dataset_start_et": "2025-10-06T09:30:00-04:00",
+  "dataset_end_et": "2026-11-09T15:55:00-05:00",
+  "unique_sessions": 276,
+  "duplicate_timestamps_removed": 0,
+  "invalid_ohlcv_rows": 0,
+  "off_five_minute_grid_rows": 0,
+  "session_candle_count_distribution": {
+    "42": 3,
+    "78": 273
+  },
+  "session_counts_not_42_or_78": {},
+  "missing_expected_rth_candles": [],
+  "unexpected_rth_candles": [],
+  "timezone": "America/New_York",
+  "bar_interval_minutes": 5,
+  "completed_bar_contract": "timestamps are candle starts; offline snapshot is assumed completed through its last saved bar",
+  "target_definition": "Exact close[t] to close[t+10 minutes], same New York date and RTH; UP if return > 0 bps, DOWN if return < 0 bps; exact zero return is omitted as neutral/unlabeled.",
+  "horizon_minutes": 10,
+  "reference_price": "close of completed 5-minute candle at t",
+  "exit_price": "close of exact 5-minute candle timestamped t+10 minutes",
+  "labeled_rows": 20721,
+  "down_rows": 10334,
+  "up_rows": 10387,
+  "zero_return_rows": 147,
+  "unavailable_or_neutral_rows": 699,
+  "validation_months": [
+    "2026-06",
+    "2026-07",
+    "2026-08",
+    "2026-09",
+    "2026-10"
+  ],
+  "final_test_start": "2026-11-01",
+  "final_test_labeled_rows": 455,
+  "final_test_sessions": 6,
+  "feature_sets": {
+    "legacy40": 40,
+    "current36": 36,
+    "expanded": 86
+  },
+  "test_policy": "Do not use rows on or after final_test_start during fold/model selection; evaluate the selected candidate only after selection.",
+  "optional_models_skipped": [
+    "XGBoost: optional package xgboost is not installed",
+    "CatBoost: optional package catboost is not installed"
+  ],
+  "model_family_comparison_protocol": "Same expanding monthly date folds, same target, training-only median imputation, fixed documented parameters; no tuning on test."
+}

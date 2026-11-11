@@ -1,0 +1,38 @@
+{
+  "seed": 42,
+  "validation_months": [
+    "2026-06",
+    "2026-07",
+    "2026-08",
+    "2026-09",
+    "2026-10"
+  ],
+  "final_test_start": "2026-11-01",
+  "purge_samples": 2,
+  "target": "Exact close[t] to close[t+10 minutes], same New York date and RTH; UP if return > 0 bps, DOWN if return < 0 bps; exact zero return is omitted as neutral/unlabeled.",
+  "model_candidates": [
+    "LogisticRegression",
+    "RandomForest",
+    "HistGradientBoosting",
+    "LightGBM"
+  ],
+  "optional_models_skipped": [
+    "XGBoost: optional package xgboost is not installed",
+    "CatBoost: optional package catboost is not installed"
+  ],
+  "weighting_strategies": [
+    "equal",
+    "decay_10",
+    "decay_20",
+    "decay_30",
+    "decay_60"
+  ],
+  "rolling_training_sessions": [
+    30,
+    60,
+    90,
+    120
+  ],
+  "final_test_used_for_selection": false,
+  "production_artifacts_modified": false
+}

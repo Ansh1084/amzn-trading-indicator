@@ -1,0 +1,53 @@
+{
+  "n": 455,
+  "up_actual": 206,
+  "down_actual": 249,
+  "accuracy": 0.5428571428571428,
+  "precision_macro": 0.5429612025658861,
+  "recall_macro": 0.5433481498810777,
+  "f1_macro": 0.5418812686364869,
+  "f1_weighted": 0.5438794872787824,
+  "balanced_accuracy": 0.5433481498810777,
+  "mcc": 0.08630848504978801,
+  "up_precision": 0.4956140350877193,
+  "up_recall": 0.5485436893203883,
+  "up_f1": 0.5207373271889401,
+  "down_precision": 0.5903083700440529,
+  "down_recall": 0.5381526104417671,
+  "down_f1": 0.5630252100840336,
+  "confusion_matrix_labels_down_up": [
+    [
+      134,
+      115
+    ],
+    [
+      93,
+      113
+    ]
+  ],
+  "roc_auc": 0.5565758178344445,
+  "pr_auc_up": 0.4690836824028737,
+  "log_loss": 0.7025067257210467,
+  "brier_score_raw": 0.2537667543898138,
+  "majority_baseline_accuracy": 0.45274725274725275,
+  "majority_class_in_train": "UP",
+  "trade_n_nonoverlap": 228,
+  "trade_cumulative_gross_return": 0.011586315810586001,
+  "trade_max_drawdown": -0.05968449222993322,
+  "trade_profit_factor": 1.0512934277489747,
+  "trade_win_rate": 0.5614035087719298,
+  "trade_average_strategy_return": 5.627511368071782e-05,
+  "trade_average_actual_return": -0.00023118233446145644,
+  "trade_average_absolute_return": 0.0022505177740122857,
+  "trade_correct_count": 128,
+  "model": "LightGBM",
+  "feature_set": "expanded",
+  "sample_strategy": "equal",
+  "rolling_sessions": 120,
+  "train_start": "2026-05-12",
+  "train_end": "2026-10-30",
+  "test_start": "2026-11-02",
+  "test_end": "2026-11-09",
+  "test_sessions": 6,
+  "return_convention": "UP=long, DOWN=short; close[t] entry to close[t+10m] exit; gross, no costs; every second 5-minute anchor only to avoid overlapping 10m positions."
+}
