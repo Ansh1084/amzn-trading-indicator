@@ -1,1 +1,1 @@
-FastAPI service. Keep routes thin and call reusable logic from `src/inference/`.
+FastAPI service for the dashboard, completed IEX candles, frozen window forecast issuance, post-window comparison, model metadata, and structured pipeline logs. Start it from the repository root with `python -m uvicorn backend.app.main:app --reload`. Alpaca credentials remain backend-only in `.env`.
