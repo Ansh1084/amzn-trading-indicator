@@ -1,0 +1,16 @@
+{
+  "environment": "Isolated local Uvicorn process with a temporary SQLite database; no production database or Alpaca credentials used",
+  "results": [
+    {"method": "GET", "path": "/api/analysis/latest", "status": 200, "result": "verified"},
+    {"method": "GET", "path": "/api/analysis/signals?limit=1", "status": 200, "result": "verified"},
+    {"method": "GET", "path": "/api/analysis/active", "status": 200, "result": "verified"},
+    {"method": "GET", "path": "/api/analysis/outcomes?limit=1", "status": 200, "result": "verified"},
+    {"method": "GET", "path": "/api/analysis/signals/not-a-real-id", "status": 404, "result": "expected not found"},
+    {"method": "POST", "path": "/api/analysis/run?source=local", "status": 422, "result": "expected stale-snapshot rejection; local data predates configured current-session freshness limit"},
+    {"method": "POST", "path": "/api/analysis/outcomes/resolve?source=local", "status": 200, "result": "verified"}
+  ],
+  "not_verified": [
+    "Live Alpaca feed behavior",
+    "A continuously running scheduler process over a live session"
+  ]
+}
