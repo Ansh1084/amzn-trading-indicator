@@ -1,4 +1,9 @@
-import React from 'react';
+import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-function App() { return <main style={{fontFamily:'sans-serif',padding:24}}><h1>AMZN Trading Indicator</h1><p>Frontend scaffold — chart and signals will be implemented later.</p></main>; }
-createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);
+import App from './App';
+import './style.css';
+import './terminal.css';
+
+const root = document.getElementById('root');
+if (!root) throw new Error('Missing #root application element');
+createRoot(root).render(<StrictMode><App /></StrictMode>);
