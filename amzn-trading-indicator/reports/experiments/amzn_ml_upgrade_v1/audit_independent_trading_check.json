@@ -1,0 +1,16 @@
+{
+  "trade_count": 228,
+  "gross_compounded_return": 0.011586315810584447,
+  "maximum_trade_level_drawdown": -0.05968449222993322,
+  "profit_factor": 1.051293427748973,
+  "win_rate": 0.5614035087719298,
+  "max_abs_return_difference_vs_target_fraction": 1.1037178115902435e-16,
+  "same_day_exact_t_plus_10_candle_match": true,
+  "entry": "completed 5-minute candle close at timestamp t",
+  "exit": "close of exact same-session candle timestamped t+10 minutes",
+  "position": "UP prediction = long; DOWN prediction = short",
+  "selected_anchor_rule": "minute-of-day from 09:30 is divisible by 10",
+  "minimum_within_session_entry_spacing_minutes": 10.0,
+  "non_overlapping_entries_confirmed": true,
+  "fees_spread_slippage_modeled": false
+}
