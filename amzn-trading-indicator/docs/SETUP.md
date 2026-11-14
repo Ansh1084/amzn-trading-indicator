@@ -96,3 +96,14 @@ npm run build
 ```
 
 See [`DEMO_RUNBOOK.md`](DEMO_RUNBOOK.md) for a complete presentation procedure and troubleshooting.
+
+
+## Live AMZN chart feed
+
+The FastAPI process owns one Alpaca IEX streaming connection. It reads `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` from the backend `.env`; keys are never sent to Vite. On startup it seeds `artifacts/market_stream.sqlite3` from the newest processed snapshot (insert-only), then starts Alpaca's AMZN one-minute bar subscription. Genuine minute bars update a visibly marked forming 5-minute aggregate only. Forming bars are excluded from indicator and ML inputs. Alpaca does not provide a native 5-minute bar subscription in this client, so provider-confirmed completed 5-minute bars are reconciled through the existing historical-bars API at startup and every 60 seconds. Completed bars are upserted by UTC start timestamp; a provider correction updates that timestamp. A missing interval is logged and never filled with a synthetic candle.
+
+The backend publishes candle, analysis, signal, gap, status and synchronization events from the persistent market event log at `GET /api/market/events`. Event IDs support replay after browser reconnect. The dashboard has one `EventSource`; it applies candles incrementally and uses a timestamp delta request when a hidden tab becomes visible. The existing forecast scheduler remains separate and is not duplicated. Stopping FastAPI closes its stream and reconciliation task. Alpaca's SDK manages bounded socket reconnects; on reconnect the service performs an immediate historical overlap reconciliation, then resumes its periodic recovery.
+
+Check `GET /api/market/stream/status` for provider/feed, real connection state, market state, last received minute event, last completed/persisted bar, last reconciliation, freshness and errors. `GET /api/market/candles` returns completed candles plus a forming bar only while recent updates are arriving in an open session. The market calendar is the project's existing deterministic calendar helper; it covers configured regular holidays and scheduled early closes, but cannot know unscheduled exchange closures. A delayed/missing IEX bar is reported as stale or as a gap; no price is substituted. IEX is a limited exchange feed, so its observed volume and updates can differ from SIP/consolidated data.
+
+If credentials are missing, the dashboard continues to show the local snapshot and the stream status is `DISCONNECTED`; no live data request is made. To inspect status without printing secrets, call the status endpoint or check startup logs. To verify the latest persisted completed candle, compare `last_persisted_candle` from stream status with the final `timestamp` from `/api/market/candles`.
