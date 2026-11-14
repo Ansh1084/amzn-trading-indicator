@@ -1,9 +1,12 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend.app.api.routes import router
 from backend.app.services.market_stream import service as market_stream
+
+logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -22,10 +25,16 @@ async def lifespan(app: FastAPI):
 
 async def _reconcile_loop():
     # Recover missed/completed bars regularly; the stream provides minute updates only.
-    await market_stream.reconcile()
     while True:
+        try:
+            await market_stream.reconcile()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Keep periodic recovery alive even if an unexpected exception escapes
+            # the service's own error boundary.
+            logger.exception("Unexpected error in the AMZN market reconciliation loop")
         await asyncio.sleep(60)
-        await market_stream.reconcile()
 
 app = FastAPI(title="AMZN Trading Indicator API", version="0.2.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

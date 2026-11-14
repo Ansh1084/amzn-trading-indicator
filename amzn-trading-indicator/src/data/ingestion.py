@@ -3,11 +3,49 @@ from __future__ import annotations
 
 import os
 import argparse
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 from dotenv import load_dotenv
+
+
+_ALPACA_IMPORT_LOCK = threading.Lock()
+_ALPACA_SDK = None
+
+
+def _import_alpaca_sdk():
+    """Import all SDK modules used by this app in one deterministic sequence."""
+    from alpaca.data.enums import DataFeed
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.live import StockDataStream
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+    return SimpleNamespace(
+        DataFeed=DataFeed,
+        StockHistoricalDataClient=StockHistoricalDataClient,
+        StockDataStream=StockDataStream,
+        StockBarsRequest=StockBarsRequest,
+        TimeFrame=TimeFrame,
+        TimeFrameUnit=TimeFrameUnit,
+    )
+
+
+def initialize_alpaca_sdk():
+    """Serialize Alpaca's first-time imports across stream and REST worker threads.
+
+    The lock protects import initialization only. Client construction and network
+    requests happen after it is released.
+    """
+    global _ALPACA_SDK
+    if _ALPACA_SDK is not None:
+        return _ALPACA_SDK
+    with _ALPACA_IMPORT_LOCK:
+        if _ALPACA_SDK is None:
+            _ALPACA_SDK = _import_alpaca_sdk()
+    return _ALPACA_SDK
 
 
 def fetch_alpaca_candles(lookback_days: int = 35, start: datetime | None = None,
@@ -19,17 +57,14 @@ def fetch_alpaca_candles(lookback_days: int = 35, start: datetime | None = None,
     if not key or not secret:
         raise RuntimeError("Alpaca credentials are not configured in the backend environment")
     try:
-        from alpaca.data.enums import DataFeed
-        from alpaca.data.historical import StockHistoricalDataClient
-        from alpaca.data.requests import StockBarsRequest
-        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        sdk = initialize_alpaca_sdk()
     except ImportError as exc:
         raise RuntimeError("Install alpaca-py to retrieve Alpaca market data") from exc
     now = end or datetime.now(timezone.utc)
-    request = StockBarsRequest(symbol_or_symbols=["AMZN"], timeframe=TimeFrame(5, TimeFrameUnit.Minute),
+    request = sdk.StockBarsRequest(symbol_or_symbols=["AMZN"], timeframe=sdk.TimeFrame(5, sdk.TimeFrameUnit.Minute),
                                start=start or now - timedelta(days=lookback_days), end=now,
-                               limit=10000, feed=DataFeed.IEX)
-    bars = StockHistoricalDataClient(key, secret).get_stock_bars(request).df
+                               limit=10000, feed=sdk.DataFeed.IEX)
+    bars = sdk.StockHistoricalDataClient(key, secret).get_stock_bars(request).df
     if bars.empty and not allow_empty:
         raise RuntimeError("Alpaca returned no AMZN IEX candles")
     if bars.empty:
@@ -164,21 +199,18 @@ def refresh_training_history(start: datetime | None = None, end: datetime | None
     if not key or not secret:
         raise RuntimeError("Alpaca credentials are not configured in the backend environment")
     try:
-        from alpaca.data.enums import DataFeed
-        from alpaca.data.historical import StockHistoricalDataClient
-        from alpaca.data.requests import StockBarsRequest
-        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        sdk = initialize_alpaca_sdk()
     except ImportError as exc:
         raise RuntimeError("Install alpaca-py to retrieve Alpaca market data") from exc
     end = end or datetime.now(timezone.utc)
     start = start or end - timedelta(days=400)
-    client = StockHistoricalDataClient(key, secret)
+    client = sdk.StockHistoricalDataClient(key, secret)
     chunks, cursor = [], start
     while cursor < end:
         chunk_end = min(cursor + timedelta(days=30), end)
-        bars = client.get_stock_bars(StockBarsRequest(
-            symbol_or_symbols=["AMZN"], timeframe=TimeFrame(5, TimeFrameUnit.Minute),
-            start=cursor, end=chunk_end, limit=10000, feed=DataFeed.IEX,
+        bars = client.get_stock_bars(sdk.StockBarsRequest(
+            symbol_or_symbols=["AMZN"], timeframe=sdk.TimeFrame(5, sdk.TimeFrameUnit.Minute),
+            start=cursor, end=chunk_end, limit=10000, feed=sdk.DataFeed.IEX,
         )).df
         if not bars.empty:
             chunks.append(bars.reset_index())

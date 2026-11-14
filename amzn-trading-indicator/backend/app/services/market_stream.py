@@ -15,9 +15,25 @@ from dotenv import load_dotenv
 from backend.app.services import market_store
 from backend.app.services.analysis.config import ANALYSIS_VERSION
 from backend.app.services.analysis.persistence import get_signal_for_candle
-from src.data.ingestion import fetch_alpaca_candles, latest_processed_path, load_local_candles
+from src.data.ingestion import (fetch_alpaca_candles, initialize_alpaca_sdk,
+                                latest_processed_path, load_local_candles)
 
 logger = logging.getLogger(__name__)
+STREAM_RETRY_BASE_SECONDS = 1.0
+STREAM_RETRY_MAX_SECONDS = 30.0
+AUTH_ERROR_TERMS = ("unauthorized", "authentication", "forbidden", "invalid key",
+                    "invalid secret", "401", "403", "insufficient subscription")
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(term in message for term in AUTH_ERROR_TERMS)
+
+
+def _is_permanent_sdk_error(exc: Exception) -> bool:
+    if type(exc).__name__ == "DeadlockError":
+        return False
+    return isinstance(exc, ImportError)
 
 
 def _bar_dict(bar, source: str) -> dict:
@@ -44,6 +60,9 @@ class MarketStreamService:
         self._stream = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
+        self._reconcile_state_lock = threading.Lock()
+        self._reconcile_task: asyncio.Task | None = None
+        self._fatal_stream_error = threading.Event()
         self._retries = 0
         self._project = Path(__file__).resolve().parents[3]
 
@@ -58,6 +77,8 @@ class MarketStreamService:
                 market_store.write_status({"connection_state": "DISCONNECTED", "last_error": "Alpaca credentials are not configured"})
                 return False
             self._stop.clear()
+            self._fatal_stream_error.clear()
+            self._retries = 0
             self._thread = threading.Thread(target=self._run_stream, args=(key, secret), daemon=True, name="amzn-alpaca-iex")
             self._thread.start()
             return True
@@ -82,79 +103,115 @@ class MarketStreamService:
             pass
 
     def _run_stream(self, key: str, secret: str) -> None:
-        try:
-            from alpaca.data.enums import DataFeed
-            from alpaca.data.live import StockDataStream
-        except Exception as exc:
-            market_store.write_status({"connection_state": "ERROR", "last_error": _safe_error(exc)})
-            return
         owner = self
+        while not self._stop.is_set() and not self._fatal_stream_error.is_set():
+            stream = None
+            try:
+                market_store.write_status({"connection_state": "CONNECTING"})
+                # This shared loader serializes first-time live and historical SDK imports.
+                sdk = initialize_alpaca_sdk()
+                StockDataStream, DataFeed = sdk.StockDataStream, sdk.DataFeed
 
-        class StatusStream(StockDataStream):
-            async def _auth(self, *args, **kwargs):
-                try:
-                    await super()._auth(*args, **kwargs)
-                except Exception as exc:
-                    text = str(exc).lower()
-                    if any(term in text for term in ("unauthorized", "authentication", "forbidden", "invalid key", "invalid secret")):
-                        market_store.write_status({"connection_state": "ERROR", "last_error": _safe_error(exc)})
-                        self.stop()
-                    else:
-                        market_store.write_status({"connection_state": "RECONNECTING", "last_error": _safe_error(exc)})
-                    raise
-                reconnecting = market_store.get_status().get("connection_state") == "RECONNECTING"
-                market_store.write_status({"connection_state": "CONNECTED", "last_error": None,
-                                           "retry_count": owner._retries})
-                if reconnecting:
-                    threading.Thread(target=lambda: asyncio.run(owner.reconcile()), daemon=True,
-                                     name="amzn-market-reconnect-reconcile").start()
+                class StatusStream(StockDataStream):
+                    async def _auth(self, *args, **kwargs):
+                        try:
+                            await super()._auth(*args, **kwargs)
+                        except Exception as exc:
+                            if _is_auth_error(exc):
+                                owner._fatal_stream_error.set()
+                                market_store.write_status({"connection_state": "ERROR", "last_error": _safe_error(exc),
+                                                           "retry_count": owner._retries})
+                                self.stop()
+                            else:
+                                market_store.write_status({"connection_state": "RECONNECTING",
+                                                           "last_error": _safe_error(exc),
+                                                           "retry_count": owner._retries})
+                            raise
+                        owner._retries = 0
+                        market_store.write_status({"connection_state": "CONNECTED", "last_error": None,
+                                                   "retry_count": 0})
 
-            async def _wait_before_reconnect(self, retries, run):
-                owner._retries = max(owner._retries, int(retries))
-                market_store.write_status({"connection_state": "RECONNECTING", "retry_count": owner._retries})
-                await super()._wait_before_reconnect(retries, run)
+                    async def _wait_before_reconnect(self, retries, run):
+                        owner._retries = max(owner._retries, int(retries))
+                        market_store.write_status({"connection_state": "RECONNECTING",
+                                                   "retry_count": owner._retries})
+                        await super()._wait_before_reconnect(retries, run)
 
-            async def _drive_run(self, run):
-                await super()._drive_run(run)
-                if not owner._stop.is_set() and market_store.get_status().get("connection_state") != "ERROR":
-                    market_store.write_status({"connection_state": "ERROR", "last_error": "Alpaca stream stopped unexpectedly"})
+                stream = StatusStream(key, secret, feed=DataFeed.IEX)
+                self._stream = stream
 
-        try:
-            market_store.write_status({"connection_state": "CONNECTING", "last_error": None})
-            stream = StatusStream(key, secret, feed=DataFeed.IEX)
-            self._stream = stream
+                async def on_minute(bar):
+                    stamp = pd.Timestamp(bar.timestamp).tz_convert("UTC").to_pydatetime()
+                    local = stamp.astimezone(ZoneInfo("America/New_York"))
+                    from src.forecasts.calendar import is_trading_day, session_close
+                    if not is_trading_day(local.date()) or (local.hour, local.minute) < (9, 30):
+                        return
+                    close = session_close(local.date())
+                    bucket_minute = (local.minute // 5) * 5
+                    if (local.hour, bucket_minute + 5) > (close.hour, close.minute):
+                        return
+                    now = datetime.now(timezone.utc).isoformat()
+                    market_store.write_status({"last_received_event_at": now, "connection_state": "CONNECTED"}, emit=False)
+                    market_store.upsert_minute_bar(_bar_dict(bar, "alpaca_iex_minute_aggregation"))
 
-            async def on_minute(bar):
-                stamp = pd.Timestamp(bar.timestamp).tz_convert("UTC").to_pydatetime()
-                local = stamp.astimezone(ZoneInfo("America/New_York"))
-                from src.forecasts.calendar import is_trading_day, session_close
-                if not is_trading_day(local.date()) or (local.hour, local.minute) < (9, 30):
-                    return
-                close = session_close(local.date())
-                bucket_minute = (local.minute // 5) * 5
-                if (local.hour, bucket_minute + 5) > (close.hour, close.minute):
-                    return
-                now = datetime.now(timezone.utc).isoformat()
-                market_store.write_status({"last_received_event_at": now, "connection_state": "CONNECTED"}, emit=False)
-                event = market_store.upsert_minute_bar(_bar_dict(bar, "alpaca_iex_minute_aggregation"))
-                if event:
-                    # Persisted event is delivered by replayable SSE; the 1m partial aggregate is never analyzed.
-                    pass
+                stream.subscribe_bars(on_minute, "AMZN")
+                stream.run()
+                if self._stop.is_set() or self._fatal_stream_error.is_set():
+                    break
+                raise RuntimeError("Alpaca IEX stream stopped unexpectedly")
+            except Exception as exc:
+                if self._stop.is_set():
+                    break
+                permanent = _is_auth_error(exc) or _is_permanent_sdk_error(exc)
+                error = _safe_error(exc)
+                logger.exception("AMZN Alpaca IEX stream %s: %s",
+                                 "initialization/connection failed" if not permanent else "cannot start",
+                                 error)
+                if permanent or self._fatal_stream_error.is_set():
+                    market_store.write_status({"connection_state": "ERROR", "last_error": error,
+                                               "retry_count": self._retries})
+                    self._fatal_stream_error.set()
+                    break
+                self._retries += 1
+                delay = min(STREAM_RETRY_BASE_SECONDS * (2 ** (self._retries - 1)), STREAM_RETRY_MAX_SECONDS)
+                market_store.write_status({"connection_state": "RECONNECTING", "last_error": error,
+                                           "retry_count": self._retries})
+                self._wait_before_retry(delay)
+            finally:
+                if stream is not None:
+                    try:
+                        stream.stop()
+                    except Exception:
+                        logger.debug("Error while stopping failed Alpaca stream", exc_info=True)
+                self._stream = None
+        if self._stop.is_set():
+            market_store.write_status({"connection_state": "DISCONNECTED", "last_error": None,
+                                       "retry_count": self._retries})
 
-            stream.subscribe_bars(on_minute, "AMZN")
-            # SDK reconnects its socket internally with bounded retry delays.
-            stream.run()
-        except Exception as exc:
-            self._retries += 1
-            message = str(exc).lower()
-            state = "ERROR" if any(x in message for x in ("unauthorized", "authentication", "forbidden", "subscription")) else "DISCONNECTED"
-            market_store.write_status({"connection_state": state, "last_error": _safe_error(exc), "retry_count": self._retries})
-        finally:
-            self._stream = None
-            if self._stop.is_set():
-                market_store.write_status({"connection_state": "DISCONNECTED", "last_error": None})
+    def _wait_before_retry(self, delay: float) -> bool:
+        """Wait interruptibly; returns True when shutdown was requested."""
+        return self._stop.wait(delay)
 
     async def reconcile(self) -> dict:
+        """Coalesce concurrent callers without holding a lock over network I/O."""
+        loop = asyncio.get_running_loop()
+        with self._reconcile_state_lock:
+            task = self._reconcile_task
+            if task is not None and not task.done():
+                if task.get_loop() is not loop:
+                    return {"synchronized": False, "skipped": "reconciliation is running on another event loop"}
+            else:
+                task = loop.create_task(self._reconcile_once(), name="amzn-market-reconciliation")
+                self._reconcile_task = task
+        try:
+            return await asyncio.shield(task)
+        finally:
+            if task.done():
+                with self._reconcile_state_lock:
+                    if self._reconcile_task is task:
+                        self._reconcile_task = None
+
+    async def _reconcile_once(self) -> dict:
         """Backfill the recent overlap; provider-native completed 5m bars win corrections."""
         try:
             latest = market_store.get_candles(limit=1)
