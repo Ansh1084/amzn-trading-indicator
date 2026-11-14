@@ -23,6 +23,13 @@ def _decode(row):
 def get_signal(signal_id: str, db_path=None):
     with connect(db_path) as db: return _decode(db.execute("SELECT * FROM analysis_signals WHERE signal_id=?", (signal_id,)).fetchone())
 
+def get_signal_for_candle(candle_timestamp: str, analysis_version: str, db_path=None):
+    """Return the immutable analysis already persisted for one candle/version."""
+    with connect(db_path) as db:
+        row = db.execute("SELECT * FROM analysis_signals WHERE candle_timestamp=? AND analysis_version=?",
+                         (candle_timestamp, analysis_version)).fetchone()
+        return _decode(row)
+
 def list_signals(start: str | None=None, end: str | None=None, status: str | None=None, limit=100, offset=0, db_path=None):
     clauses=[]; args=[]
     if start: clauses.append("candle_timestamp>=?"); args.append(start)

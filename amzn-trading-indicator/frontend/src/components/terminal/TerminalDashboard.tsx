@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { analysisApi } from '../../services/analysisApi';
+import { API_BASE } from '../../services/api';
 import type { AnalysisLatestResponse, DataSnapshotStatus, MarketSnapshot, SignalRecord } from '../../types/analysis';
 import { formatDate, formatTime, price } from '../../utils/format';
 import { AnalysisPanel } from './AnalysisPanel';
@@ -20,7 +21,13 @@ function normalizeLatest(data: AnalysisLatestResponse): SignalRecord | null {
   };
 }
 
-function getMarketState(timestamp?: string | null) {
+function getMarketState(timestamp?: string | null, stream?: MarketSnapshot['stream_status']) {
+  if (stream?.market_state === 'CLOSED') return { stale: false, state: 'CLOSED', marketClockOpen: false, detail: 'Market calendar reports the regular session closed; latest stored candles are retained and are not presented as live.' };
+  if (stream?.market_state === 'OPEN') {
+    if (stream.connection_state !== 'CONNECTED') return { stale: true, state: 'STALE', marketClockOpen: true, detail: `The market is open, but the Alpaca stream is ${stream.connection_state || 'not confirmed connected'}; analysis is disabled until the feed recovers.` };
+    if (stream.freshness === 'STALE') return { stale: true, state: 'STALE', marketClockOpen: true, detail: 'The Alpaca stream is connected, but its latest completed candle is stale.' };
+    return { stale: false, state: 'FRESH', marketClockOpen: true, detail: 'Market session and data freshness are reported by the backend.' };
+  }
   if (!timestamp) return { stale: true, state: 'UNAVAILABLE', marketClockOpen: false, detail: 'No completed market candle is available.' };
   const now = new Date();
   const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(now);
@@ -46,13 +53,20 @@ export function TerminalDashboard() {
   const [selectedTimestamp, setSelectedTimestamp] = useState<string | null>(null);
   const [visibleChartCandle, setVisibleChartCandle] = useState<MarketSnapshot['candles'][number] | null>(null);
   const [syncOperation, setSyncOperation] = useState<SyncOperation | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const eventCursorRef = useRef(0);
+  const lastCandleTimestampRef = useRef<string | null>(null);
 
   const reload = useCallback(async (quiet = false) => {
     if (!quiet) { setActivity((old) => old ? old : 'refreshing'); setError(''); }
     const [marketResult, statusResult, latestResult, signalsResult] = await Promise.allSettled([
       analysisApi.market(1000), analysisApi.status(), analysisApi.latest(), analysisApi.signals(0, 100),
     ]);
-    if (marketResult.status === 'fulfilled') setMarket(marketResult.value);
+    if (marketResult.status === 'fulfilled') {
+      setMarket(marketResult.value);
+      eventCursorRef.current = marketResult.value.event_cursor || eventCursorRef.current;
+      lastCandleTimestampRef.current = marketResult.value.candles.at(-1)?.timestamp || lastCandleTimestampRef.current;
+    }
     if (statusResult.status === 'fulfilled') setDataStatus(statusResult.value);
     if (latestResult.status === 'fulfilled') setAnalysis(normalizeLatest(latestResult.value));
     if (signalsResult.status === 'fulfilled') setSignals(signalsResult.value.signals);
@@ -63,11 +77,94 @@ export function TerminalDashboard() {
     setActivity('');
   }, []);
 
+  const refreshAnalysisPanels = useCallback(async () => {
+    const [statusResult, latestResult, signalsResult, streamResult] = await Promise.allSettled([
+      analysisApi.status(), analysisApi.latest(), analysisApi.signals(0, 100), analysisApi.streamStatus(),
+    ]);
+    if (statusResult.status === 'fulfilled') setDataStatus(statusResult.value);
+    if (latestResult.status === 'fulfilled') setAnalysis(normalizeLatest(latestResult.value));
+    if (signalsResult.status === 'fulfilled') setSignals(signalsResult.value.signals);
+    if (streamResult.status === 'fulfilled') setMarket((current) => current ? { ...current, stream_status: streamResult.value } : current);
+  }, []);
+
   useEffect(() => {
     void reload();
-    const timer = window.setInterval(() => void reload(true), 60_000);
+    const timer = window.setInterval(() => void refreshAnalysisPanels(), 60_000);
     return () => window.clearInterval(timer);
-  }, [reload]);
+  }, [reload, refreshAnalysisPanels]);
+
+  useEffect(() => {
+    if (market?.event_cursor === undefined) return;
+    let disposed = false;
+    const connect = () => {
+      if (disposed || document.visibilityState === 'hidden') return;
+      eventSourceRef.current?.close();
+      const source = new EventSource(`${API_BASE}/market/events?last_event_id=${eventCursorRef.current}`);
+      eventSourceRef.current = source;
+      const parse = (event: MessageEvent) => {
+        try {
+          const value = JSON.parse(event.data);
+          eventCursorRef.current = Math.max(eventCursorRef.current, Number(value.event_id || event.lastEventId || 0));
+          if (value.event_type === 'market_status') {
+            setMarket((current) => current ? { ...current, stream_status: { ...current.stream_status, ...value } } : current);
+          } else if (value.event_type === 'candle_update') {
+            setMarket((current) => current ? { ...current, forming_candle: { ...value.candle, observed_minute_count: value.observed_minute_count } } : current);
+          } else if (['candle_completed', 'candle_corrected'].includes(value.event_type)) {
+            const candle = value.candle;
+            if (candle?.timestamp) {
+              setMarket((current) => {
+                if (!current) return current;
+                const map = new Map(current.candles.map((item) => [item.timestamp, item]));
+                map.set(candle.timestamp, candle);
+                const candles = Array.from(map.values()).sort((a, b) => a.timestamp.localeCompare(b.timestamp)).slice(-1000);
+                lastCandleTimestampRef.current = candles.at(-1)?.timestamp || null;
+                return { ...current, candles, latest_timestamp: candles.at(-1)?.timestamp || current.latest_timestamp,
+                  chart_rows: candles.length, forming_candle: current.forming_candle?.timestamp === candle.timestamp ? null : current.forming_candle,
+                  stream_status: { ...current.stream_status, last_completed_candle: candle.timestamp, last_persisted_candle: candle.timestamp, freshness: 'FRESH' } };
+              });
+            }
+            if (value.event_type === 'candle_completed') void refreshAnalysisPanels();
+          } else if (value.event_type === 'analysis_updated' || value.event_type === 'signal_created') {
+            void refreshAnalysisPanels();
+          } else if (value.event_type === 'synchronization_completed') {
+            setMarket((current) => current ? { ...current, stream_status: { ...current.stream_status, last_reconciliation_at: value.event_timestamp, reconciliation_error: null } } : current);
+          } else if (value.event_type === 'data_gap_detected') {
+            setNotice(`Market data gap detected: ${value.missing_interval_count} interval(s) between ${formatTime(value.from, true)} and ${formatTime(value.to, true)}. No candles were fabricated.`);
+          } else if (value.event_type === 'analysis_failed') {
+            setError(`Analysis failed for ${formatTime(value.candle_timestamp, true)}: ${value.error || 'Unknown analysis error'}`);
+          } else if (value.event_type === 'reconciliation_failed') {
+            setError(`Market-data reconciliation failed: ${value.error || 'Unknown provider error'}`);
+          }
+        } catch { /* Ignore malformed events; EventSource continues and server replay remains available. */ }
+      };
+      for (const name of ['market_status', 'candle_update', 'candle_completed', 'candle_corrected', 'analysis_updated', 'analysis_failed', 'signal_created', 'data_gap_detected', 'reconciliation_failed', 'synchronization_completed']) {
+        source.addEventListener(name, parse as EventListener);
+      }
+      source.onerror = () => setMarket((current) => current ? { ...current, stream_status: { ...current.stream_status, connection_state: 'RECONNECTING' } } : current);
+    };
+    const visibility = () => {
+      if (document.visibilityState === 'hidden') { eventSourceRef.current?.close(); eventSourceRef.current = null; }
+      else {
+        const last = lastCandleTimestampRef.current;
+        if (last) void analysisApi.marketAfter(last).then((delta) => {
+          if (disposed) return;
+          setMarket((current) => {
+            if (!current) return current;
+            const map = new Map(current.candles.map((item) => [item.timestamp, item]));
+            delta.candles.forEach((item) => map.set(item.timestamp, item));
+            const candles = Array.from(map.values()).sort((a, b) => a.timestamp.localeCompare(b.timestamp)).slice(-1000);
+            lastCandleTimestampRef.current = candles.at(-1)?.timestamp || last;
+            return { ...current, candles, latest_timestamp: candles.at(-1)?.timestamp || current.latest_timestamp,
+              forming_candle: delta.forming_candle ?? current.forming_candle, stream_status: delta.stream_status || current.stream_status };
+          });
+        }).catch(() => undefined);
+        connect();
+      }
+    };
+    connect();
+    document.addEventListener('visibilitychange', visibility);
+    return () => { disposed = true; document.removeEventListener('visibilitychange', visibility); eventSourceRef.current?.close(); eventSourceRef.current = null; };
+  }, [market?.event_cursor, refreshAnalysisPanels]);
 
   useEffect(() => {
     if (!syncOperation || syncOperation.status !== 'RUNNING') return;
@@ -122,7 +219,7 @@ export function TerminalDashboard() {
   };
 
   const candleTime = market?.latest_timestamp || dataStatus?.latest_completed_rth_candle;
-  const marketState = getMarketState(candleTime);
+  const marketState = getMarketState(candleTime, market?.stream_status);
   const latestMarketCandle = market?.candles.at(-1);
   const latestAligned = Boolean(analysis && latestMarketCandle && new Date(analysis.candle_timestamp).getTime() === new Date(latestMarketCandle.timestamp).getTime());
   const currentPrice = latestMarketCandle?.close;
@@ -150,10 +247,10 @@ export function TerminalDashboard() {
     <div className="terminal-grid">
       <section className="chart-region">
         <div className="terminal-panel chart-panel">
-          <div className="terminal-chart-heading"><div><span className="terminal-kicker">NASDAQ · AMZN · REGULAR SESSION</span><h1>Price action</h1><p>Actual completed 5-minute OHLCV candles · Eastern Time</p></div>
+          <div className="terminal-chart-heading"><div><span className="terminal-kicker">NASDAQ · AMZN · REGULAR SESSION</span><h1>Price action</h1><p>Actual completed 5-minute OHLCV candles · Eastern Time</p><p className="market-stream-detail">Alpaca IEX · Stream {market?.stream_status?.connection_state || 'STATUS UNKNOWN'} · Last event {formatTime(market?.stream_status?.last_received_event_at, true)} · Persisted {formatTime(market?.stream_status?.last_persisted_candle, true)}{market?.forming_candle ? ` · Forming candle · ${market.forming_candle.observed_minute_count ?? '—'}/5 observed minutes` : ' · No current forming candle'}{market?.stream_status?.reconciliation_error ? ` · Reconciliation error: ${market.stream_status.reconciliation_error}` : ''}</p></div>
             <div className="chart-price-summary"><small>LAST COMPLETED CANDLE CLOSE</small><b>{price(currentPrice)}</b><span>{formatTime(candleTime, true)}</span><small>{market?.source || 'Local processed snapshot'}</small></div>
           </div>
-          <TradingChart candles={market?.candles || []} signals={signals} payload={analysisPayload} selectedTimestamp={selectedTimestamp} onVisibleRightCandle={setVisibleChartCandle} />
+          <TradingChart candles={market?.candles || []} formingCandle={market?.forming_candle} signals={signals} payload={analysisPayload} selectedTimestamp={selectedTimestamp} onVisibleRightCandle={setVisibleChartCandle} />
           <div className="chart-data-note"><span>{market?.chart_rows?.toLocaleString() || '0'} actual candles plotted</span><span>Chart right edge: {price(visibleChartCandle?.close)} · {formatTime(visibleChartCandle?.timestamp, true)}</span><span>Latest data close: {price(currentPrice)} · {latestAligned ? 'analysis uses this candle' : 'analysis uses another candle'}</span><span>Signals: {signalCount} BUY/SELL markers loaded</span></div>
         </div>
       </section>

@@ -42,6 +42,8 @@ def fetch_alpaca_candles(lookback_days: int = 35, start: datetime | None = None,
     from src.data.preprocessing import filter_rth
     df, _ = filter_rth(df)
     if df.empty:
+        if allow_empty:
+            return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
         raise RuntimeError("No completed 5-minute AMZN candles returned by Alpaca")
     return df
 

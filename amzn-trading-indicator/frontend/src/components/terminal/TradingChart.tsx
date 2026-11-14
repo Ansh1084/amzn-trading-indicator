@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CandlestickSeries, ColorType, createChart, createSeriesMarkers, HistogramSeries, LineSeries, LineStyle,
-  type IChartApi, type IPriceLine, type ISeriesApi, type Time, type UTCTimestamp,
+  type IChartApi, type IPriceLine, type ISeriesApi, type SeriesMarker, type Time, type UTCTimestamp,
 } from 'lightweight-charts';
 import type { AnalysisPayload, MarketCandle, SignalRecord } from '../../types/analysis';
 import { formatTime, price } from '../../utils/format';
@@ -86,8 +86,8 @@ function niceTime(time: Time) {
   return sameDay ? `${date} ${clock}` : `${date} ${clock}`;
 }
 
-export function TradingChart({ candles, signals, payload, selectedTimestamp, onVisibleRightCandle }: {
-  candles: MarketCandle[]; signals: SignalRecord[]; payload?: AnalysisPayload; selectedTimestamp?: string | null; onVisibleRightCandle?: (candle: MarketCandle) => void;
+export function TradingChart({ candles, formingCandle, signals, payload, selectedTimestamp, onVisibleRightCandle }: {
+  candles: MarketCandle[]; formingCandle?: MarketCandle | null; signals: SignalRecord[]; payload?: AnalysisPayload; selectedTimestamp?: string | null; onVisibleRightCandle?: (candle: MarketCandle) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
@@ -98,6 +98,7 @@ export function TradingChart({ candles, signals, payload, selectedTimestamp, onV
   const priceLines = useRef<IPriceLine[]>([]);
   const rangeSignature = useRef('');
   const candlesRef = useRef(candles);
+  const plottedCandlesRef = useRef<MarketCandle[]>([]);
   const signalsByTime = useMemo(() => new Map(signals.map((record) => [epoch(record.candle_timestamp), record])), [signals]);
   const signalsRef = useRef(signalsByTime);
   const onVisibleRightCandleRef = useRef(onVisibleRightCandle);
@@ -187,9 +188,25 @@ export function TradingChart({ candles, signals, payload, selectedTimestamp, onV
     const candleApi = candleSeries.current;
     const volumeApi = volumeSeries.current;
     if (!instance || !candleApi || !volumeApi) return;
-    const points = candles.map((c) => ({ time: epoch(c.timestamp), open: c.open, high: c.high, low: c.low, close: c.close }));
-    candleApi.setData(points);
-    volumeApi.setData(candles.map((c) => ({ time: epoch(c.timestamp), value: c.volume, color: c.close >= c.open ? '#08998177' : '#f2364577' })));
+    const displayCandles = formingCandle
+      ? [...candles.filter((c) => c.timestamp !== formingCandle.timestamp), formingCandle].sort((a, b) => epoch(a.timestamp) - epoch(b.timestamp))
+      : candles;
+    candlesRef.current = displayCandles;
+    const points = displayCandles.map((c) => ({ time: epoch(c.timestamp), open: c.open, high: c.high, low: c.low, close: c.close }));
+    if (!plottedCandlesRef.current.length) {
+      candleApi.setData(points);
+      volumeApi.setData(displayCandles.map((c) => ({ time: epoch(c.timestamp), value: c.volume, color: c.close >= c.open ? '#08998177' : '#f2364577' })));
+    } else {
+      const previous = new Map(plottedCandlesRef.current.map((c) => [epoch(c.timestamp), c]));
+      for (const c of displayCandles) {
+        const t = epoch(c.timestamp); const old = previous.get(t);
+        if (old && old.open === c.open && old.high === c.high && old.low === c.low && old.close === c.close && old.volume === c.volume) continue;
+        const historical = Boolean(old) && t !== epoch(plottedCandlesRef.current.at(-1)!.timestamp);
+        candleApi.update({ time: t, open: c.open, high: c.high, low: c.low, close: c.close }, historical);
+        volumeApi.update({ time: t, value: c.volume, color: c.close >= c.open ? '#08998177' : '#f2364577' }, historical);
+      }
+    }
+    plottedCandlesRef.current = displayCandles;
     for (const spec of overlaySpec) {
       const series = overlaySeries.current.get(spec.key);
       if (!series) continue;
@@ -205,12 +222,16 @@ export function TradingChart({ candles, signals, payload, selectedTimestamp, onV
         else lower?.setData([]);
       }
     }
-    markerPlugin.current?.setMarkers(showMarkers ? signals.filter((s) => ['BUY', 'SELL'].includes(s.classification)).flatMap((s) => {
+    const markers: SeriesMarker<Time>[] = showMarkers ? signals.filter((s) => ['BUY', 'SELL'].includes(s.classification)).flatMap((s) => {
       const ts = epoch(s.candle_timestamp);
-      if (!points.some((point) => point.time === ts)) return [];
+      if (!candles.some((point) => epoch(point.timestamp) === ts)) return [];
       const buy = s.classification === 'BUY';
       return [{ time: ts, position: buy ? 'belowBar' as const : 'aboveBar' as const, color: buy ? '#089981' : '#f23645', shape: buy ? 'arrowUp' as const : 'arrowDown' as const, text: buy ? 'BUY' : 'SELL', size: 1 }];
-    }) : []);
+    }) : [];
+    if (formingCandle && !candles.some((c) => c.timestamp === formingCandle.timestamp)) {
+      markers.push({ time: epoch(formingCandle.timestamp), position: 'aboveBar', color: '#ff9800', shape: 'circle', text: 'FORMING', size: 1 });
+    }
+    markerPlugin.current?.setMarkers(markers);
     for (const line of priceLines.current) candleApi.removePriceLine(line);
     priceLines.current = [];
     if (showZones && payload?.structure) {
@@ -244,7 +265,7 @@ export function TradingChart({ candles, signals, payload, selectedTimestamp, onV
       const index = Math.min(candles.length - 1, Math.floor(range.to));
       if (index >= 0) onVisibleRightCandleRef.current?.(candles[index]);
     }
-  }, [candles, calculated, signals, payload, overlays, showMarkers, showRisk, showZones, autoScroll]);
+  }, [candles, formingCandle, calculated, signals, payload, overlays, showMarkers, showRisk, showZones, autoScroll]);
 
   useEffect(() => {
     if (!selectedTimestamp || !chart.current) return;

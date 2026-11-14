@@ -1,12 +1,15 @@
 """Dashboard, frozen forecast, comparison, and pipeline-log endpoints."""
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 import json
 from pathlib import Path
 from zoneinfo import ZoneInfo
 import asyncio
 import time
+import logging
+import math
+import numpy as np
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -32,6 +35,7 @@ from src.forecasts.legacy_sessions import (generate_session_predictions, list_se
     evaluate_session_predictions, interval_schedule, LEGACY_MODELS, session_actual_candles,
     _session_decision, _actual_session)
 from backend.app.services.analysis.service import analyze_candles
+from backend.app.services import market_store
 from backend.app.services.analysis.outcomes import resolve_signals
 from backend.app.services.analysis.persistence import get_signal, list_signals, signal_events, active_signals, latest_signal
 from fastapi.responses import StreamingResponse, Response
@@ -41,6 +45,26 @@ import io
 router = APIRouter()
 ROOT = Path(__file__).resolve().parents[3]
 DATA_PATH = ROOT / "data" / "processed" / "AMZN_clean.csv"
+logger = logging.getLogger(__name__)
+
+
+def _json_safe_optional(value):
+    """Normalize optional metadata only, after required candle fields are validated."""
+    if isinstance(value, dict):
+        return {str(key): _json_safe_optional(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_optional(item) for item in value]
+    if value is None or value is pd.NA or value is pd.NaT:
+        return None
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return value.isoformat()
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        return float(value) if math.isfinite(float(value)) else None
+    if isinstance(value, (np.bool_,)):
+        return bool(value)
+    return value
 
 
 def _analysis_local_candles() -> pd.DataFrame:
@@ -166,22 +190,120 @@ def _candles(source: str) -> pd.DataFrame:
 
 
 @router.get("/market/candles")
-def market_candles(limit: int = Query(1200, ge=1, le=10000), source: str = "local"):
-    full = _candles(source)
-    full_len = len(full)
-    df = full.tail(limit).copy()
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).map(lambda x: x.isoformat())
-    status = dataset_status(limit) if source == "local" else {"rows": full_len, "source": "Alpaca IEX LIVE"}
+def market_candles(limit: int = Query(1200, ge=1, le=10000), source: str = "local", after: str | None = None):
+    # Capture cursor before reading; SSE replays any event concurrent with this snapshot.
+    cursor = market_store.latest_event_id()
+    full = _candles(source) if not after else pd.DataFrame(columns=["timestamp","open","high","low","close","volume"])
+    forming = None
+    if source == "local":
+        stream_rows = market_store.get_candles(limit=10000, after=after)
+        if stream_rows:
+            full = pd.concat([full, pd.DataFrame(stream_rows)], ignore_index=True, sort=False)
+            full["timestamp"] = pd.to_datetime(full["timestamp"], utc=True, errors="raise")
+            full = full.sort_values("timestamp").drop_duplicates("timestamp", keep="last").reset_index(drop=True)
+        forming = _current_forming_candle()
+    if "symbol" not in full.columns:
+        # The local endpoint is AMZN-only. Make that configured identity explicit
+        # for older/single-symbol snapshot files that predate a symbol column.
+        logger.info("AMZN candle response supplied without a symbol column; applying configured symbol %s", market_store.MARKET_SYMBOL)
+        full = full.copy()
+        full["symbol"] = market_store.MARKET_SYMBOL
+    invalid_timestamp = 0
+    if "timestamp" in full.columns:
+        full = full.copy()
+        full["timestamp"] = pd.to_datetime(full["timestamp"], utc=True, errors="coerce")
+        invalid_timestamp = int(full["timestamp"].isna().sum())
+        full = full.loc[full["timestamp"].notna()]
+        full = full.sort_values("timestamp").drop_duplicates("timestamp", keep="last")
+    else:
+        full = pd.DataFrame(columns=["timestamp", "symbol", "open", "high", "low", "close", "volume"])
+    if invalid_timestamp:
+        logger.warning("Excluded %d AMZN candle record(s) with invalid timestamps", invalid_timestamp)
+    valid_records = []
+    invalid_records = []
+    for record in full.to_dict(orient="records"):
+        try:
+            core = market_store.validate_candle_record(record)
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            invalid_records.append((record.get("timestamp"), str(exc)))
+            continue
+        record.update(core)
+        valid_records.append({key: _json_safe_optional(value) for key, value in record.items()})
+    if invalid_records:
+        logger.warning("Excluded %d invalid AMZN candle record(s) from API response; samples=%s",
+                       len(invalid_records), invalid_records[:5])
+    full_len = len(valid_records)
+    response_records = valid_records[-limit:]
+    status = dataset_status(limit) if source == "local" and not after else {"rows": full_len, "source": "Alpaca IEX stream" if source == "local" else "Alpaca IEX LIVE"}
     return {"symbol": "AMZN", "feed": "IEX completed 5-minute candles", "source": status.get("source", source),
-            "dataset_rows": status.get("rows", len(df)), "chart_rows": len(df),
+            "dataset_rows": status.get("rows", full_len), "chart_rows": len(response_records),
             "dataset_start": status.get("dataset_start"), "dataset_end": status.get("dataset_end"),
-            "latest_timestamp": df.timestamp.iloc[-1], "candles": df.to_dict(orient="records")}
+            "latest_timestamp": response_records[-1]["timestamp"] if response_records else None, "candles": response_records,
+            "forming_candle": _json_safe_optional(forming), "stream_status": _json_safe_optional(_market_stream_status()), "event_cursor": cursor}
+
+
+def _market_stream_status() -> dict:
+    status = market_store.get_status()
+    now = datetime.now(ZoneInfo("America/New_York"))
+    try:
+        close = session_close(now.date()) if is_trading_day(now.date()) else None
+        opened = bool(close and now.weekday() < 5 and (now.hour, now.minute) >= (9, 30) and now.time() < close)
+    except Exception:
+        opened = False
+    status["market_state"] = "OPEN" if opened else "CLOSED"
+    latest = status.get("last_completed_candle")
+    if latest:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(latest).astimezone(timezone.utc)).total_seconds()
+        status["freshness"] = "FRESH" if age <= 15 * 60 else "STALE"
+    else:
+        status["freshness"] = "UNAVAILABLE"
+    return status
+
+
+def _current_forming_candle() -> dict | None:
+    candle = market_store.latest_forming()
+    if not candle or _market_stream_status().get("market_state") != "OPEN":
+        return None
+    updated = datetime.fromisoformat(candle["updated_at"]).astimezone(timezone.utc)
+    return candle if (datetime.now(timezone.utc) - updated).total_seconds() <= 5 * 60 else None
+
+
+@router.get("/market/stream/status")
+def market_stream_status():
+    return _json_safe_optional(_market_stream_status())
+
+
+@router.get("/market/events")
+async def market_events(request: Request, last_event_id: int = Query(0, ge=0)):
+    header_id = request.headers.get("last-event-id")
+    try:
+        cursor = max(last_event_id, int(header_id or 0))
+    except ValueError:
+        cursor = last_event_id
+    async def stream():
+        nonlocal cursor
+        while not await request.is_disconnected():
+            events = market_store.list_events(cursor, limit=250)
+            if events:
+                for event in events:
+                    cursor = event["event_id"]
+                    payload = {**event["payload"], "event_id": cursor,
+                               "event_type": event["event_type"], "event_timestamp": event["event_timestamp"]}
+                    yield f"id: {cursor}\nevent: {event['event_type']}\ndata: {json.dumps(payload, separators=(',', ':'), allow_nan=False)}\n\n"
+            else:
+                yield ": keep-alive\n\n"
+                await asyncio.sleep(1)
+    return StreamingResponse(stream(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.get("/data/status")
 def data_status(chart_limit: int = Query(2000, ge=1, le=10000)):
     try:
-        return dataset_status(chart_limit)
+        status = dataset_status(chart_limit)
+        status["stream_status"] = _market_stream_status()
+        status["forming_candle"] = _current_forming_candle()
+        return status
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

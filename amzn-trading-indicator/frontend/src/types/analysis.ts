@@ -5,6 +5,7 @@ export interface MarketCandle {
   low: number;
   close: number;
   volume: number;
+  observed_minute_count?: number;
 }
 
 export interface Zone {
@@ -113,8 +114,20 @@ export interface MarketSnapshot {
   source: string;
   dataset_rows: number;
   chart_rows: number;
-  latest_timestamp: string;
+  latest_timestamp: string | null;
   candles: MarketCandle[];
+  forming_candle?: MarketCandle | null;
+  stream_status?: MarketStreamStatus;
+  event_cursor?: number;
+}
+
+export interface MarketStreamStatus {
+  provider?: string; symbol?: string; feed?: string;
+  connection_state?: 'CONNECTED' | 'CONNECTING' | 'DISCONNECTED' | 'RECONNECTING' | 'STALE' | 'ERROR' | string;
+  market_state?: 'OPEN' | 'CLOSED' | string; freshness?: 'FRESH' | 'STALE' | 'UNAVAILABLE' | string;
+  last_received_event_at?: string | null; last_completed_candle?: string | null;
+  last_persisted_candle?: string | null; last_reconciliation_at?: string | null;
+  reconciliation_error?: string | null; last_error?: string | null; retry_count?: number;
 }
 
 export interface AnalysisLatestResponse {
