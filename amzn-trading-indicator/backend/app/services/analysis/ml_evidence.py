@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
-from src.features.legacy_engineering import FEATURE_COLUMNS, generate_features
+from src.features.legacy_engineering import FEATURE_COLUMNS, REQUIRED_INPUT_COLUMNS, generate_features
 from src.forecasts.legacy_sessions import (
     MODEL_PATH, MODEL_VERSION, _artifact_sha256, load_legacy_model,
 )
@@ -18,11 +18,22 @@ def latest_ml_evidence(completed_candles: pd.DataFrame) -> dict:
         model, columns, classes = load_legacy_model(MODEL_PATH)
         if columns != FEATURE_COLUMNS or len(columns) != 40:
             raise ValueError("production model feature manifest mismatch")
+        missing_inputs = [name for name in REQUIRED_INPUT_COLUMNS if name not in completed_candles.columns]
+        if missing_inputs:
+            raise ValueError(f"Completed candles are missing legacy model input column(s): {missing_inputs}")
+        if completed_candles.empty:
+            raise ValueError("No completed candles are available for production inference")
         featured = generate_features(completed_candles.copy(), reset_daily=False)
+        missing_features = [name for name in columns if name not in featured.columns]
+        if missing_features:
+            raise ValueError(f"Legacy feature pipeline did not generate required feature column(s): {missing_features}")
         row = featured.iloc[-1]
-        values = row[columns].to_numpy(dtype=float)
-        if values.shape != (40,) or not np.isfinite(values).all():
-            raise ValueError("latest production feature row is incomplete")
+        values = row.loc[columns].to_numpy(dtype=float)
+        if values.shape != (40,):
+            raise ValueError(f"Legacy model input shape is {values.shape}; expected exactly 40 ordered features")
+        unavailable = [name for name, value in zip(columns, values) if not np.isfinite(value)]
+        if unavailable:
+            raise ValueError(f"Latest legacy feature values are unavailable (warm-up or source data missing): {unavailable}")
         x = pd.DataFrame([values], columns=columns, dtype=float)
         probabilities = model.predict_proba(x)[0]
         raw_up = float(probabilities[classes.index(1.0)])
