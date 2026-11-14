@@ -1,0 +1,29 @@
+AMZN Trading Analysis Engine independent audit — verification results
+
+Historical replay
+Command: .venv\Scripts\python.exe reports\experiments\trading_analysis_engine_audit\replay.py
+Result: completed; 21,420 calendar-valid completed RTH 5-minute candles, 17,786 valid analyses, 3,634 warm-up rows, October 6, 2025 through November 9, 2026 ET.
+The replay metadata reports 28,405.31 seconds elapsed. No training/tuning, live Alpaca request, broker order, or production database write was performed.
+
+Tests
+Command: .venv\Scripts\python.exe -m pytest -q --ignore=tests\test_health.py
+Result: 211 passed, 8 sklearn feature-name warnings, 19.17 seconds.
+The health test module remains excluded because its TestClient run has previously hung in this Windows environment; it was not verified in this audit.
+
+Compilation
+Command: .venv\Scripts\python.exe -m compileall -q backend\app\services\analysis src\forecasts tests\test_analysis_engine.py reports\experiments\trading_analysis_engine_audit
+Result: passed.
+
+Report rendering
+Command: .venv\Scripts\python.exe reports\experiments\trading_analysis_engine_audit\render_audit_report.py
+Result: passed after handling null outcome returns in example selection.
+
+Independent artifact checks
+Result: signal distribution total 21,420; replay DB signal rows 21,420; duplicate signal IDs 0; trade CSV rows 6,620 (one row per strategy setup); strategy setup row counts combined 1,173, EMA baseline 2,423, RSI baseline 784, ML-only 2,240. Replay data SHA-256 and frozen LightGBM artifact SHA-256 matched metadata.
+
+HTTP API checks
+See api_http_results.json. Checks used isolated temporary storage. Stale local snapshot POST /analysis/run correctly returned HTTP 422; this is a guard check, not a successful fresh-data analysis run.
+
+Diff hygiene
+Command: git diff --check
+Result: passed; Git emitted only line-ending conversion warnings for existing working-tree files.
