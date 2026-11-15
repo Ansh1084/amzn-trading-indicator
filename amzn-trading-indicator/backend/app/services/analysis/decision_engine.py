@@ -24,7 +24,11 @@ def _evidence(indicators: pd.DataFrame, structure: dict, regime: dict, ml: dict)
     if bullish_divergence and momentum<=0: momentum=.5
     if bearish_divergence and momentum>=0: momentum=-.5
     acceleration=float(last.momentum_acceleration) if pd.notna(last.get("momentum_acceleration")) else 0.0
-    rel_vol = float(last.relative_volume) if pd.notna(last.relative_volume) else 1.0
+    volume_ratio_available = pd.notna(last.relative_volume)
+    rel_vol = float(last.relative_volume) if volume_ratio_available else 1.0
+    current_volume = float(last.volume) if pd.notna(last.get("volume")) else None
+    volume_baseline = float(last.volume_sma_20) if pd.notna(last.get("volume_sma_20")) else None
+    volume_samples = int(last.volume_observation_count_20) if pd.notna(last.get("volume_observation_count_20")) else None
     bar_sign = float(np.sign(float(last.close) - float(last.open)))
     volume = float(np.clip(bar_sign * max(0.0, rel_vol - 1.0) / 1.5, -1, 1))
     sequence = structure.get("sequence", {})
@@ -59,9 +63,11 @@ def _evidence(indicators: pd.DataFrame, structure: dict, regime: dict, ml: dict)
                   "structure": struct, "price_action": price_action, "ml": ml_score}
     bullish, bearish, neutral = [], [], []
     reasons = {
-        "trend": f"Trend alignment is {last.trend_classification.lower()} (EMA 9/20/50 and slopes).",
+        "trend": f"Moving average structure is {last.trend_classification} (EMA 9/20/50 ordering and slopes); this is separate from 1H/15M/5M trend alignment.",
         "momentum": f"RSI-7={rsi:.1f}, MACD histogram={hist:.4f}, histogram change={acceleration:+.4f}, ROC-5={roc:.3f}%; bullish divergence={bullish_divergence}, bearish divergence={bearish_divergence}.",
-        "volume": f"Relative volume={rel_vol:.2f}x; candle signed volume evidence={volume:+.2f}.",
+        "volume": (f"Session rolling volume ratio={rel_vol:.2f}x (current candle {current_volume:,.0f} / same-session trailing 20-bar mean {volume_baseline:,.2f}; {volume_samples} observed bars, includes current candle; input candle {pd.Timestamp(last.timestamp).isoformat()}); candle signed volume evidence={volume:+.2f}."
+                   if volume_ratio_available and current_volume is not None and volume_baseline is not None and volume_samples is not None
+                   else f"Session rolling volume ratio={'unavailable' if not volume_ratio_available else f'{rel_vol:.2f}x'}; candle signed volume evidence={volume:+.2f}."),
         "structure": f"Structure sequence={sequence}; breakout={bo}; breakdown={bd}.",
         "price_action": f"Latest completed candle body is {price_action:+.2f} ATR.",
         "ml": (f"Frozen {ml.get('model_version')} raw UP score={float(ml['raw_probability_up']):.3f} (uncalibrated)."

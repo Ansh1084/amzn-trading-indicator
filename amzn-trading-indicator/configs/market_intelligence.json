@@ -1,0 +1,7 @@
+{
+  "rvol_history_sessions": 20,
+  "rvol_minimum_samples": 3,
+  "rvol_low_below": 0.75,
+  "rvol_normal_below": 1.2,
+  "rvol_elevated_below": 1.8
+}

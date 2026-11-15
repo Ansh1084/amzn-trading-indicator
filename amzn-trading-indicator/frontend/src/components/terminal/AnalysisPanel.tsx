@@ -3,7 +3,7 @@ import type { AnalysisPayload, DataSnapshotStatus, MarketSnapshot, SignalRecord 
 import { formatDate, formatTime, price } from '../../utils/format';
 
 const n = (value: unknown, digits = 2) => typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '—';
-const componentLabels: Record<string, string> = { trend: 'EMA trend alignment', momentum: 'RSI / MACD momentum', volume: 'Signed relative volume', structure: 'Market structure', price_action: 'Candle price action', ml: 'Production ML evidence' };
+const componentLabels: Record<string, string> = { trend: 'Moving average structure evidence', momentum: 'RSI / MACD momentum', volume: 'Signed session rolling volume evidence', structure: 'Market structure', price_action: 'Candle price action', ml: 'Production ML evidence' };
 const etDateFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });
 
 function MarketStatistics({ snapshot, status, payload }: { snapshot: MarketSnapshot | null; status: DataSnapshotStatus | null; payload?: AnalysisPayload }) {
@@ -17,22 +17,33 @@ function MarketStatistics({ snapshot, status, payload }: { snapshot: MarketSnaps
   for (const c of sessionBars) { pv += ((c.high + c.low + c.close) / 3) * c.volume; volume += c.volume; }
   const sessionVwap = volume ? pv / volume : null;
   const indicators = payload?.indicators || {};
+  const analysisTime = payload?.candle_timestamp ? new Date(payload.candle_timestamp).getTime() : NaN;
+  const analysisDate = payload?.candle_timestamp ? etDateFormatter.format(new Date(payload.candle_timestamp)) : '';
+  const analysisSessionBars = Number.isFinite(analysisTime) && analysisDate
+    ? candles.filter((c) => etDateFormatter.format(new Date(c.timestamp)) === analysisDate && new Date(c.timestamp).getTime() <= analysisTime)
+    : [];
+  const volumeSampleCount = typeof indicators.volume_observation_count_20 === 'number'
+    ? indicators.volume_observation_count_20
+    : analysisSessionBars.some((c) => new Date(c.timestamp).getTime() === analysisTime)
+      ? Math.min(20, analysisSessionBars.length) : null;
   const items: Array<[string, string]> = [
     ['Last completed close', price(latest?.close)], ['Session high / low', high == null || low == null ? '—' : `${price(high)} / ${price(low)}`],
     ['Session range', high == null || low == null ? '—' : price(high - low)], ['Session VWAP*', price(sessionVwap)],
     ['VWAP distance', latest && sessionVwap != null ? `${n((latest.close / sessionVwap - 1) * 100)}%` : '—'],
     ['RSI 14', n(indicators.rsi_14, 1)], ['MACD', n(indicators.macd, 3)],
     ['ATR %', indicators.atr_pct == null ? '—' : `${n(indicators.atr_pct, 2)}%`],
-    ['Relative volume', indicators.relative_volume == null ? '—' : `${n(indicators.relative_volume, 2)}×`],
+    ['Session rolling volume ratio', indicators.relative_volume == null ? '—' : `${n(indicators.relative_volume, 2)}×`],
     ['Volatility regime', String(indicators.volatility_classification || '—')],
     ['Market regime', String(payload?.market_regime?.classification || '—')],
     ['Feed', `${snapshot?.feed || status?.feed || 'Unavailable'}`],
-    ['Last completed candle', formatTime(snapshot?.latest_timestamp || status?.latest_completed_rth_candle, true)],
+    ['Latest market candle', formatTime(snapshot?.latest_timestamp || status?.latest_completed_rth_candle, true)],
+    ['Analysis input candle', formatTime(payload?.candle_timestamp, true)],
   ];
   return <section className="terminal-panel market-stats-panel">
     <div className="terminal-section-head"><div><span className="terminal-kicker">VERIFIED INPUTS</span><h3>Market statistics</h3></div><span className="terminal-badge">{sessionDate ? formatDate(sessionDate) : 'NO SESSION'}</span></div>
     <div className="stat-rows">{items.map(([label, value]) => <div className="stat-row" key={label}><span>{label}</span><b>{value}</b></div>)}</div>
-    <p className="tiny-disclaimer">*Session VWAP is calculated from actual 5-minute OHLCV bars using typical price × volume. Market clock uses weekday ET hours; the API does not expose live holiday or early-close state.</p>
+    <p className="tiny-disclaimer">Session rolling volume ratio = current 5-minute candle volume ÷ mean of up to 20 observed completed bars in the same ET session (includes current bar). It is not same-time-slot historical RVOL. Analysis indicator values are as of {formatTime(payload?.candle_timestamp, true)}. Session VWAP uses actual OHLCV bars.</p>
+    {indicators.relative_volume != null && <p className="tiny-disclaimer">Volume breakdown: {n(indicators.volume, 0)} current shares ÷ {n(indicators.volume_sma_20, 2)} same-session mean across {n(volumeSampleCount, 0)} observed bars.</p>}
   </section>;
 }
 
@@ -57,7 +68,7 @@ export function AnalysisPanel({ record, market, dataStatus, fresh, marketClosed 
           <small>Weighted heuristic score · not a probability or confidence</small>
         </div>
         <div className="direction-breakdown" aria-label="Decision evidence layers">
-          <div><small>BROADER MARKET TREND</small><b>{String(payload.indicators?.trend_classification || 'Not reported')}</b><span>EMA-based context</span></div>
+          <div><small>MOVING AVERAGE STRUCTURE</small><b>{String(payload.indicators?.trend_classification || 'Not reported')}</b><span>EMA 9/20/50 ordering and slopes · as of {formatTime(record.candle_timestamp, true)}</span></div>
           <div><small>SHORT-TERM DIRECTIONAL EVIDENCE</small><b>{payload.directional_bias || 'Not reported'}</b><span>Technical score {n(payload.technical_score, 3)}</span></div>
           <div><small>ML DIRECTIONAL SIGNAL</small><b>{ml?.available ? ml.direction || 'Not reported' : 'Unavailable'}</b><span>Raw score shown separately below</span></div>
           <div><small>FINAL DECISION</small><b>{classification}</b><span>Decision-engine result</span></div>
@@ -77,9 +88,9 @@ export function AnalysisPanel({ record, market, dataStatus, fresh, marketClosed 
         </div>
         {payload.conflicting_signals?.length ? <div className="inline-warning"><b>Trend and immediate evidence may disagree</b><ul>{payload.conflicting_signals.map((item) => <li key={item}>{item}</li>)}</ul></div> : null}
         <div className="evidence-grid">
-          <Evidence title="Bullish evidence" entries={payload.bullish_evidence || []} kind="positive" />
-          <Evidence title="Bearish evidence" entries={payload.bearish_evidence || []} kind="negative" />
-          <Evidence title="Neutral observations" entries={payload.neutral_observations || []} kind="neutral" />
+          <Evidence title="Bullish evidence" entries={payload.bullish_evidence || []} kind="positive" indicators={payload.indicators} />
+          <Evidence title="Bearish evidence" entries={payload.bearish_evidence || []} kind="negative" indicators={payload.indicators} />
+          <Evidence title="Neutral observations" entries={payload.neutral_observations || []} kind="neutral" indicators={payload.indicators} />
         </div>
         <details className="reason-block"><summary><span className="terminal-kicker">DECISION EXPLANATION · BACKEND REASONS</span></summary>{(payload.reasons || []).map((reason) => <p key={reason}>{reason}</p>)}
           {payload.required_confirmation && <p><b>Required confirmation:</b> {payload.required_confirmation}</p>}
@@ -108,10 +119,16 @@ export function AnalysisPanel({ record, market, dataStatus, fresh, marketClosed 
   </div>;
 }
 
-function Evidence({ title, entries, kind }: { title: string; entries: string[]; kind: string }) {
+function Evidence({ title, entries, kind, indicators }: { title: string; entries: string[]; kind: string; indicators?: AnalysisPayload['indicators'] }) {
   const [expanded, setExpanded] = useState(false);
   const visible = expanded ? entries : entries.slice(0, 3);
-  return <section className={`evidence-box ${kind}`}><h4>{title}</h4>{entries.length ? <><ul>{visible.map((item) => <li key={item}>{item}</li>)}</ul>{entries.length > 3 && <button className="evidence-expand" onClick={() => setExpanded((value) => !value)}>{expanded ? 'Show less' : `Show all ${entries.length}`}</button>}</> : <p>No items returned.</p>}</section>;
+  const present = (item: string) => {
+    if (item.startsWith('Trend alignment is ')) {
+      return `Moving average structure is ${String(indicators?.trend_classification || 'unavailable')} (EMA 9/20/50 ordering and slopes); this is separate from 1H/15M/5M trend alignment.`;
+    }
+    return item.replace(/^Relative volume=/, 'Session rolling volume ratio=');
+  };
+  return <section className={`evidence-box ${kind}`}><h4>{title}</h4>{entries.length ? <><ul>{visible.map((item) => <li key={item}>{present(item)}</li>)}</ul>{entries.length > 3 && <button className="evidence-expand" onClick={() => setExpanded((value) => !value)}>{expanded ? 'Show less' : `Show all ${entries.length}`}</button>}</> : <p>No items returned.</p>}</section>;
 }
 
 function Level({ title, value, tone = '' }: { title: string; value: string; tone?: string }) {

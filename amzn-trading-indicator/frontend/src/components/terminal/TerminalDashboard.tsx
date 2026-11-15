@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { analysisApi } from '../../services/analysisApi';
 import { API_BASE } from '../../services/api';
 import type { AnalysisLatestResponse, DataSnapshotStatus, MarketSnapshot, SignalRecord } from '../../types/analysis';
+import type { MarketIntelligence } from '../../services/analysisApi';
 import { formatDate, formatTime, price } from '../../utils/format';
 import { AnalysisPanel } from './AnalysisPanel';
 import { SignalStream } from './SignalStream';
 import { TradingChart } from './TradingChart';
+import { MarketIntelligencePanel } from './MarketIntelligencePanel';
 
 type Activity = 'loading' | 'refreshing' | 'analyzing' | 'syncing' | '';
 type SyncOperation = { operation_id: string; kind: string; status: string; stage: string; progress: number; updated_at?: string; error?: string | null };
@@ -47,6 +49,8 @@ export function TerminalDashboard() {
   const [dataStatus, setDataStatus] = useState<DataSnapshotStatus | null>(null);
   const [analysis, setAnalysis] = useState<SignalRecord | null>(null);
   const [signals, setSignals] = useState<SignalRecord[]>([]);
+  const [intelligence, setIntelligence] = useState<MarketIntelligence | null>(null);
+  const [intelligenceError, setIntelligenceError] = useState('');
   const [activity, setActivity] = useState<Activity>('loading');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -59,8 +63,8 @@ export function TerminalDashboard() {
 
   const reload = useCallback(async (quiet = false) => {
     if (!quiet) { setActivity((old) => old ? old : 'refreshing'); setError(''); }
-    const [marketResult, statusResult, latestResult, signalsResult] = await Promise.allSettled([
-      analysisApi.market(1000), analysisApi.status(), analysisApi.latest(), analysisApi.signals(0, 100),
+    const [marketResult, statusResult, latestResult, signalsResult, intelligenceResult] = await Promise.allSettled([
+      analysisApi.market(1000), analysisApi.status(), analysisApi.latest(), analysisApi.signals(0, 100), analysisApi.marketIntelligence(),
     ]);
     if (marketResult.status === 'fulfilled') {
       setMarket(marketResult.value);
@@ -70,6 +74,8 @@ export function TerminalDashboard() {
     if (statusResult.status === 'fulfilled') setDataStatus(statusResult.value);
     if (latestResult.status === 'fulfilled') setAnalysis(normalizeLatest(latestResult.value));
     if (signalsResult.status === 'fulfilled') setSignals(signalsResult.value.signals);
+    if (intelligenceResult.status === 'fulfilled') { setIntelligence(intelligenceResult.value); setIntelligenceError(''); }
+    else setIntelligenceError(intelligenceResult.reason instanceof Error ? intelligenceResult.reason.message : 'Market context unavailable.');
     const failures = [marketResult, statusResult, latestResult, signalsResult].filter((result) => result.status === 'rejected');
     if (failures.length === 4) setError(failures[0].reason instanceof Error ? failures[0].reason.message : 'Cannot reach the analysis API.');
     else if (failures.length && !quiet) setNotice(`${failures.length} data request${failures.length === 1 ? '' : 's'} failed; available panels remain visible.`);
@@ -78,13 +84,15 @@ export function TerminalDashboard() {
   }, []);
 
   const refreshAnalysisPanels = useCallback(async () => {
-    const [statusResult, latestResult, signalsResult, streamResult] = await Promise.allSettled([
-      analysisApi.status(), analysisApi.latest(), analysisApi.signals(0, 100), analysisApi.streamStatus(),
+    const [statusResult, latestResult, signalsResult, streamResult, intelligenceResult] = await Promise.allSettled([
+      analysisApi.status(), analysisApi.latest(), analysisApi.signals(0, 100), analysisApi.streamStatus(), analysisApi.marketIntelligence(),
     ]);
     if (statusResult.status === 'fulfilled') setDataStatus(statusResult.value);
     if (latestResult.status === 'fulfilled') setAnalysis(normalizeLatest(latestResult.value));
     if (signalsResult.status === 'fulfilled') setSignals(signalsResult.value.signals);
     if (streamResult.status === 'fulfilled') setMarket((current) => current ? { ...current, stream_status: streamResult.value } : current);
+    if (intelligenceResult.status === 'fulfilled') { setIntelligence(intelligenceResult.value); setIntelligenceError(''); }
+    else setIntelligenceError(intelligenceResult.reason instanceof Error ? intelligenceResult.reason.message : 'Market context unavailable.');
   }, []);
 
   useEffect(() => {
@@ -250,11 +258,12 @@ export function TerminalDashboard() {
           <div className="terminal-chart-heading"><div><span className="terminal-kicker">NASDAQ · AMZN · REGULAR SESSION</span><h1>Price action</h1><p>Actual completed 5-minute OHLCV candles · Eastern Time</p><p className="market-stream-detail">Alpaca IEX · Stream {market?.stream_status?.connection_state || 'STATUS UNKNOWN'} · Last event {formatTime(market?.stream_status?.last_received_event_at, true)} · Persisted {formatTime(market?.stream_status?.last_persisted_candle, true)}{market?.forming_candle ? ` · Forming candle · ${market.forming_candle.observed_minute_count ?? '—'}/5 observed minutes` : ' · No current forming candle'}{market?.stream_status?.reconciliation_error ? ` · Reconciliation error: ${market.stream_status.reconciliation_error}` : ''}</p></div>
             <div className="chart-price-summary"><small>LAST COMPLETED CANDLE CLOSE</small><b>{price(currentPrice)}</b><span>{formatTime(candleTime, true)}</span><small>{market?.source || 'Local processed snapshot'}</small></div>
           </div>
-          <TradingChart candles={market?.candles || []} formingCandle={market?.forming_candle} signals={signals} payload={analysisPayload} selectedTimestamp={selectedTimestamp} onVisibleRightCandle={setVisibleChartCandle} />
+          <TradingChart candles={market?.candles || []} formingCandle={market?.forming_candle} signals={signals} payload={analysisPayload} intelligence={intelligence} selectedTimestamp={selectedTimestamp} onVisibleRightCandle={setVisibleChartCandle} />
           <div className="chart-data-note"><span>{market?.chart_rows?.toLocaleString() || '0'} actual candles plotted</span><span>Chart right edge: {price(visibleChartCandle?.close)} · {formatTime(visibleChartCandle?.timestamp, true)}</span><span>Latest data close: {price(currentPrice)} · {latestAligned ? 'analysis uses this candle' : 'analysis uses another candle'}</span><span>Signals: {signalCount} BUY/SELL markers loaded</span></div>
         </div>
       </section>
       <aside className="terminal-aside">
+        <MarketIntelligencePanel data={intelligence} error={intelligenceError} analysisTimestamp={analysis?.candle_timestamp} />
         <AnalysisPanel record={analysis} market={market} dataStatus={dataStatus} fresh={marketState.state === 'FRESH'} marketClosed={marketState.state === 'CLOSED'} latestAligned={latestAligned} />
       </aside>
     </div>

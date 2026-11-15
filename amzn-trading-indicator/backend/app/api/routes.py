@@ -38,6 +38,8 @@ from backend.app.services.analysis.service import analyze_candles
 from backend.app.services import market_store
 from backend.app.services.analysis.outcomes import resolve_signals
 from backend.app.services.analysis.persistence import get_signal, list_signals, signal_events, active_signals, latest_signal
+from backend.app.services.analysis.market_intelligence import analyze_market_intelligence
+from backend.app.services import paper_trading
 from fastapi.responses import StreamingResponse, Response
 import csv
 import io
@@ -46,6 +48,15 @@ router = APIRouter()
 ROOT = Path(__file__).resolve().parents[3]
 DATA_PATH = ROOT / "data" / "processed" / "AMZN_clean.csv"
 logger = logging.getLogger(__name__)
+
+
+class PaperSettingsRequest(BaseModel):
+    enabled: bool | None = None
+    starting_capital: float | None = Field(default=None, gt=0)
+    sizing_mode: str | None = None
+    sizing_value: float | None = Field(default=None, gt=0)
+    transaction_cost_bps: float | None = Field(default=None, ge=0, le=500)
+    slippage_bps: float | None = Field(default=None, ge=0, le=500)
 
 
 def _json_safe_optional(value):
@@ -85,11 +96,61 @@ def run_analysis(source: str = "local"):
         raise HTTPException(status_code=422, detail="Analysis currently accepts source='local'; no live request was made")
     try:
         result = analyze_candles(_analysis_local_candles(), source="local")
-        return {"status": "ok", **result}
+        queued_trade = paper_trading.on_actionable_signal(result.get("signal_record"))
+        return {"status": "ok", **result, "paper_trade": queued_trade}
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Analysis could not complete: {type(exc).__name__}: {exc}") from exc
+
+
+@router.get("/analysis/market-intelligence")
+def market_intelligence(source: str = "local"):
+    if source != "local":
+        raise HTTPException(status_code=422, detail="Market intelligence currently uses locally persisted completed candles")
+    try:
+        candles = market_store.get_candles(limit=10000)
+        return analyze_market_intelligence(pd.DataFrame(candles) if candles else _analysis_local_candles())
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/paper-trading/dashboard")
+def paper_dashboard():
+    latest = market_store.get_candles(limit=1)
+    mark = latest[-1] if latest else None
+    snapshot = paper_trading.dashboard(mark.get("close") if mark else None,
+                                       mark.get("timestamp") if mark else None)
+    stream_status = _market_stream_status()
+    snapshot["mark"] = {"price": mark.get("close") if mark else None,
+                        "timestamp": mark.get("timestamp") if mark else None,
+                        "source": "last completed stored candle" if mark else "unavailable",
+                        "freshness": stream_status.get("freshness", "UNAVAILABLE"),
+                        "market_state": stream_status.get("market_state", "UNKNOWN")}
+    return snapshot
+
+
+@router.post("/paper-trading/settings")
+def paper_settings(request: PaperSettingsRequest):
+    try:
+        return paper_trading.update_settings(**request.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/paper-trading/trades/{trade_id}/close")
+def paper_trade_close(trade_id: str):
+    latest = market_store.get_candles(limit=1)
+    if not latest:
+        raise HTTPException(status_code=409, detail="No completed candle is available for a simulated close")
+    mark = latest[-1]
+    try:
+        trade = paper_trading.close_trade(trade_id, float(mark["close"]), mark["timestamp"])
+        return {"trade": trade, "fill_source": "last completed stored candle", "fill_timestamp": mark["timestamp"]}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper trade not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/analysis/signals")

@@ -12,6 +12,8 @@ Academic AMZN intraday forecasting and evaluation system. The legacy 10-minute c
 - `src/inference/`: shared live prediction pipeline.
 - `backend/`: FastAPI service, shared forecast orchestrator, and separately run persistent scheduler.
 - `frontend/`: React + TypeScript + TradingView Lightweight Charts.
+- Paper trading is an explicitly enabled, simulated-only ledger in `artifacts/paper_trading.sqlite3`; it is separate from research outcomes and never sends broker orders.
+- Multi-timeframe trend, opening-range, same-slot relative-volume and previous-session levels are exposed as completed-candle evidence without changing the production decision weights.
 - `artifacts/`: local model artifacts (not committed by default).
 - `configs/`, `tests/`, `reports/`, `docs/`.
 
@@ -30,3 +32,5 @@ See `docs/SETUP.md` for setup and the forecast workflow. Forecast windows and sc
 The refresh command writes date-stamped files so existing datasets remain untouched. Training refuses stale/incomplete data and will not silently replace a registered evaluation-date model. Forecasts, versions, comparisons, operations and scheduler events are persisted in `artifacts/forecast_log.sqlite3`; a one-time additive migration takes an online backup and retains the old tables. Model artifacts are stored under `artifacts/window_models/<evaluation-date>/`. These local artifacts are git-ignored.
 
 The project calendar includes configured regular holidays and scheduled early closes; unscheduled closures are not covered. FastAPI owns one Alpaca IEX stream for forming-candle updates and reconciles provider-confirmed 5-minute bars through historical data. The separate forecast scheduler remains a distinct process. The terminal uses replayable market SSE and incremental chart updates.
+
+Paper-trading entry/fill, cost and historical replay assumptions are documented in `docs/PAPER_TRADING_AND_MARKET_INTELLIGENCE.md`.

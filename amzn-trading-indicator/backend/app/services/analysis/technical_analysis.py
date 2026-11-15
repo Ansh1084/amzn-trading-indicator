@@ -127,6 +127,10 @@ def calculate_indicators(candles: pd.DataFrame) -> pd.DataFrame:
         lambda x: x.rolling(5, min_periods=5).mean())
     frame["volume_sma_20"] = frame.volume.groupby(local_day, sort=False).transform(
         lambda x: x.rolling(20, min_periods=15).mean())
+    # Audit metadata for the existing same-session rolling ratio. This does not
+    # change the denominator or any decision/model calculation.
+    frame["volume_observation_count_20"] = frame.volume.groupby(local_day, sort=False).transform(
+        lambda x: x.rolling(20, min_periods=1).count())
     frame["relative_volume"] = frame.volume / frame.volume_sma_20.replace(0, np.nan)
     frame["volume_acceleration"] = frame.volume_sma_5 / frame.volume_sma_20.replace(0, np.nan)
     session_delta=close.groupby(local_day,sort=False).diff()

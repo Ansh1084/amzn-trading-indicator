@@ -8,6 +8,7 @@ import { SessionControls } from './components/SessionControls';
 import { SessionDecision } from './components/SessionDecision';
 import { ResearchPerformance } from './components/terminal/ResearchPerformance';
 import { TerminalDashboard } from './components/terminal/TerminalDashboard';
+import { PaperTrading } from './components/terminal/PaperTrading';
 import { api } from './services/api';
 import type { ActualCandle, DataStatus, ForecastVersion, MarketSnapshot, Operation, SessionId, SessionPrediction, SessionResult } from './types';
 import { etDate, formatDate, formatTime } from './utils/format';
@@ -195,7 +196,7 @@ function SessionForecasts() {
   </div>;
 }
 
-type MainView = 'terminal' | 'research' | 'sessions';
+type MainView = 'terminal' | 'research' | 'sessions' | 'paper';
 
 export default function App() {
   const [view, setView] = useState<MainView>('terminal');
@@ -206,11 +207,13 @@ export default function App() {
         <button className={view === 'terminal' ? 'active' : ''} onClick={() => setView('terminal')}>Terminal</button>
         <button className={view === 'research' ? 'active' : ''} onClick={() => setView('research')}>Historical research</button>
         <button className={view === 'sessions' ? 'active' : ''} onClick={() => setView('sessions')}>Session forecasts</button>
+        <button className={view === 'paper' ? 'active' : ''} onClick={() => setView('paper')}>Paper trading</button>
       </nav>
       <span className="global-mode">PREDICTION ONLY · NO ORDER EXECUTION</span>
     </header>
     {view === 'terminal' && <TerminalDashboard />}
     {view === 'research' && <ResearchPerformance />}
     {view === 'sessions' && <SessionForecasts />}
+    {view === 'paper' && <PaperTrading />}
   </div>;
 }

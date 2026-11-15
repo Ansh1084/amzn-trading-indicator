@@ -4,6 +4,7 @@ import {
   type IChartApi, type IPriceLine, type ISeriesApi, type SeriesMarker, type Time, type UTCTimestamp,
 } from 'lightweight-charts';
 import type { AnalysisPayload, MarketCandle, SignalRecord } from '../../types/analysis';
+import type { MarketIntelligence } from '../../services/analysisApi';
 import { formatTime, price } from '../../utils/format';
 
 type OverlayKey = 'ema9' | 'ema20' | 'ema50' | 'sma20' | 'sma50' | 'vwap' | 'bollinger';
@@ -86,8 +87,8 @@ function niceTime(time: Time) {
   return sameDay ? `${date} ${clock}` : `${date} ${clock}`;
 }
 
-export function TradingChart({ candles, formingCandle, signals, payload, selectedTimestamp, onVisibleRightCandle }: {
-  candles: MarketCandle[]; formingCandle?: MarketCandle | null; signals: SignalRecord[]; payload?: AnalysisPayload; selectedTimestamp?: string | null; onVisibleRightCandle?: (candle: MarketCandle) => void;
+export function TradingChart({ candles, formingCandle, signals, payload, intelligence, selectedTimestamp, onVisibleRightCandle }: {
+  candles: MarketCandle[]; formingCandle?: MarketCandle | null; signals: SignalRecord[]; payload?: AnalysisPayload; intelligence?: MarketIntelligence | null; selectedTimestamp?: string | null; onVisibleRightCandle?: (candle: MarketCandle) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
@@ -108,6 +109,9 @@ export function TradingChart({ candles, formingCandle, signals, payload, selecte
   const [showZones, setShowZones] = useState(true);
   const [showRisk, setShowRisk] = useState(true);
   const [showMarkers, setShowMarkers] = useState(true);
+  const [showOrbLevels, setShowOrbLevels] = useState(false);
+  const [showPreviousDayLevels, setShowPreviousDayLevels] = useState(false);
+  const [showPreviousClose, setShowPreviousClose] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   candlesRef.current = candles;
   signalsRef.current = signalsByTime;
@@ -254,6 +258,19 @@ export function TradingChart({ candles, formingCandle, signals, payload, selecte
         if (value != null) priceLines.current.push(candleApi.createPriceLine({ price: value, color, lineWidth: 1, lineStyle: title === 'TRIGGER' ? LineStyle.Dotted : LineStyle.Dashed, axisLabelVisible: false, title }));
       });
     }
+    const addContextLine = (enabled: boolean, value: unknown, title: string, color: string, style: LineStyle) => {
+      if (enabled && typeof value === 'number' && Number.isFinite(value)) {
+        priceLines.current.push(candleApi.createPriceLine({ price: value, color, lineWidth: 1, lineStyle: style, axisLabelVisible: false, title }));
+      }
+    };
+    const orb = intelligence?.opening_range;
+    addContextLine(showOrbLevels && orb?.status === 'READY', orb?.high, 'ORB HIGH', '#ffb84d', LineStyle.Dashed);
+    addContextLine(showOrbLevels && orb?.status === 'READY', orb?.low, 'ORB LOW', '#ffb84d', LineStyle.Dashed);
+    addContextLine(showOrbLevels && orb?.status === 'READY', orb?.midpoint, 'ORB MID', '#a88343', LineStyle.Dotted);
+    const prior = intelligence?.previous_day_levels;
+    addContextLine(showPreviousDayLevels && prior?.status === 'READY', prior?.high, 'PREV HIGH', '#8d79d6', LineStyle.Dashed);
+    addContextLine(showPreviousDayLevels && prior?.status === 'READY', prior?.low, 'PREV LOW', '#8d79d6', LineStyle.Dashed);
+    addContextLine(showPreviousClose && prior?.status === 'READY', prior?.close, 'PREV CLOSE', '#64a8e4', LineStyle.Dotted);
     const signature = points.length ? `${points[0].time}:${points.at(-1)?.time}:${points.length}` : '';
     if (signature && signature !== rangeSignature.current) {
       if (rangeSignature.current && autoScroll) instance.timeScale().scrollToRealTime();
@@ -265,7 +282,7 @@ export function TradingChart({ candles, formingCandle, signals, payload, selecte
       const index = Math.min(candles.length - 1, Math.floor(range.to));
       if (index >= 0) onVisibleRightCandleRef.current?.(candles[index]);
     }
-  }, [candles, formingCandle, calculated, signals, payload, overlays, showMarkers, showRisk, showZones, autoScroll]);
+  }, [candles, formingCandle, calculated, signals, payload, intelligence, overlays, showMarkers, showRisk, showZones, showOrbLevels, showPreviousDayLevels, showPreviousClose, autoScroll]);
 
   useEffect(() => {
     if (!selectedTimestamp || !chart.current) return;
@@ -287,6 +304,9 @@ export function TradingChart({ candles, formingCandle, signals, payload, selecte
         <label className="compact-check"><input type="checkbox" checked={showVolume} onChange={(event) => { setShowVolume(event.target.checked); volumeSeries.current?.applyOptions({ visible: event.target.checked }); }} />Volume</label>
         <label className="compact-check"><input type="checkbox" checked={showZones} onChange={(event) => setShowZones(event.target.checked)} />S/R zones</label>
         <label className="compact-check"><input type="checkbox" checked={showRisk} onChange={(event) => setShowRisk(event.target.checked)} />Risk levels</label>
+        <label className="compact-check"><input type="checkbox" checked={showOrbLevels} onChange={(event) => setShowOrbLevels(event.target.checked)} />Opening range</label>
+        <label className="compact-check"><input type="checkbox" checked={showPreviousDayLevels} onChange={(event) => setShowPreviousDayLevels(event.target.checked)} />Prev high/low</label>
+        <label className="compact-check"><input type="checkbox" checked={showPreviousClose} onChange={(event) => setShowPreviousClose(event.target.checked)} />Prev close</label>
         <label className="compact-check"><input type="checkbox" checked={showMarkers} onChange={(event) => setShowMarkers(event.target.checked)} />BUY/SELL</label>
         <label className="compact-check"><input type="checkbox" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} />Auto-scroll</label>
         <button className="terminal-icon-button" onClick={() => chart.current?.timeScale().fitContent()} title="Fit all displayed candles">Reset</button>

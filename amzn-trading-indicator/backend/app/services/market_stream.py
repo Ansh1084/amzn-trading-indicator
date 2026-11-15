@@ -227,6 +227,11 @@ class MarketStreamService:
                                  "symbol": getattr(row, "symbol", "AMZN"), "vwap": getattr(row, "vwap", None),
                                  "provider_timestamp": row.timestamp})
             events = market_store.upsert_completed_candles(bars)
+            from backend.app.services.paper_trading import process_completed_candles
+            try:
+                process_completed_candles(bars)
+            except Exception:
+                logger.exception("Paper-trade candle processing failed; market candle reconciliation remains successful")
             now = datetime.now(timezone.utc)
             market_store.write_status({"last_reconciliation_at": now.isoformat(), "reconciliation_error": None}, emit=False)
             market_store.publish_event("synchronization_completed", {"symbol": "AMZN", "bars_fetched": len(bars),
@@ -272,12 +277,21 @@ class MarketStreamService:
                 raise
             payload = result["analysis"]
             signal = result.get("signal_record")
+            from backend.app.services.paper_trading import on_actionable_signal
+            try:
+                paper_trade = on_actionable_signal(signal)
+            except Exception:
+                paper_trade = None
+                logger.exception("Paper trade could not be queued for signal %s", (signal or {}).get("signal_id"))
             try:
                 market_store.publish_event("analysis_updated", {"symbol": "AMZN", "analysis": payload,
                                            "event_timestamp": datetime.now(timezone.utc).isoformat(), "data_source": "alpaca_iex_5m"})
                 if signal and signal.get("classification") in {"BUY", "SELL"}:
                     market_store.publish_event("signal_created", {"symbol": "AMZN", "signal": signal,
                                                "event_timestamp": datetime.now(timezone.utc).isoformat(), "data_source": "alpaca_iex_5m"})
+                if paper_trade:
+                    market_store.publish_event("paper_trade_updated", {"symbol": "AMZN", "trade": paper_trade,
+                                               "event_timestamp": datetime.now(timezone.utc).isoformat(), "data_source": "completed_candle_simulation"})
             except Exception as exc:
                 logger.warning("AMZN analysis persisted for %s but event publication failed: %s",
                                latest_timestamp, _safe_error(exc))
