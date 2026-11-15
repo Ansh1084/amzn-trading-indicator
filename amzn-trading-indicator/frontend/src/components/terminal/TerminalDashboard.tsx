@@ -7,7 +7,6 @@ import { formatDate, formatTime, price } from '../../utils/format';
 import { AnalysisPanel } from './AnalysisPanel';
 import { SignalStream } from './SignalStream';
 import { TradingChart } from './TradingChart';
-import { MarketIntelligencePanel } from './MarketIntelligencePanel';
 
 type Activity = 'loading' | 'refreshing' | 'analyzing' | 'syncing' | '';
 type SyncOperation = { operation_id: string; kind: string; status: string; stage: string; progress: number; updated_at?: string; error?: string | null };
@@ -263,8 +262,16 @@ export function TerminalDashboard() {
         </div>
       </section>
       <aside className="terminal-aside">
-        <MarketIntelligencePanel data={intelligence} error={intelligenceError} analysisTimestamp={analysis?.candle_timestamp} />
-        <AnalysisPanel record={analysis} market={market} dataStatus={dataStatus} fresh={marketState.state === 'FRESH'} marketClosed={marketState.state === 'CLOSED'} latestAligned={latestAligned} />
+        <AnalysisPanel
+          record={analysis}
+          intelligence={intelligence}
+          intelligenceError={intelligenceError}
+          market={market}
+          dataStatus={dataStatus}
+          fresh={marketState.state === 'FRESH'}
+          marketClosed={marketState.state === 'CLOSED'}
+          latestAligned={latestAligned}
+        />
       </aside>
     </div>
     <SignalStream signals={signals} onSignals={addSignals} onSelect={(record) => setSelectedTimestamp(record.candle_timestamp)} />

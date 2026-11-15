@@ -1,136 +1,693 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import type { AnalysisPayload, DataSnapshotStatus, MarketSnapshot, SignalRecord } from '../../types/analysis';
-import { formatDate, formatTime, price } from '../../utils/format';
+import type { MarketIntelligence } from '../../services/analysisApi';
+import { formatTime, price } from '../../utils/format';
 
-const n = (value: unknown, digits = 2) => typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '—';
-const componentLabels: Record<string, string> = { trend: 'Moving average structure evidence', momentum: 'RSI / MACD momentum', volume: 'Signed session rolling volume evidence', structure: 'Market structure', price_action: 'Candle price action', ml: 'Production ML evidence' };
-const etDateFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });
+const n = (value: unknown, digits = 2) =>
+  typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '—';
+const text = (value: unknown) => (value == null || value === '' ? '—' : String(value));
+const number = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
 
-function MarketStatistics({ snapshot, status, payload }: { snapshot: MarketSnapshot | null; status: DataSnapshotStatus | null; payload?: AnalysisPayload }) {
-  const candles = snapshot?.candles || [];
-  const latest = candles.at(-1);
-  const sessionDate = latest ? etDateFormatter.format(new Date(latest.timestamp)) : '';
-  const sessionBars = candles.filter((c) => etDateFormatter.format(new Date(c.timestamp)) === sessionDate);
-  const high = sessionBars.length ? Math.max(...sessionBars.map((c) => c.high)) : null;
-  const low = sessionBars.length ? Math.min(...sessionBars.map((c) => c.low)) : null;
-  let pv = 0; let volume = 0;
-  for (const c of sessionBars) { pv += ((c.high + c.low + c.close) / 3) * c.volume; volume += c.volume; }
-  const sessionVwap = volume ? pv / volume : null;
-  const indicators = payload?.indicators || {};
-  const analysisTime = payload?.candle_timestamp ? new Date(payload.candle_timestamp).getTime() : NaN;
-  const analysisDate = payload?.candle_timestamp ? etDateFormatter.format(new Date(payload.candle_timestamp)) : '';
-  const analysisSessionBars = Number.isFinite(analysisTime) && analysisDate
-    ? candles.filter((c) => etDateFormatter.format(new Date(c.timestamp)) === analysisDate && new Date(c.timestamp).getTime() <= analysisTime)
-    : [];
-  const volumeSampleCount = typeof indicators.volume_observation_count_20 === 'number'
-    ? indicators.volume_observation_count_20
-    : analysisSessionBars.some((c) => new Date(c.timestamp).getTime() === analysisTime)
-      ? Math.min(20, analysisSessionBars.length) : null;
-  const items: Array<[string, string]> = [
-    ['Last completed close', price(latest?.close)], ['Session high / low', high == null || low == null ? '—' : `${price(high)} / ${price(low)}`],
-    ['Session range', high == null || low == null ? '—' : price(high - low)], ['Session VWAP*', price(sessionVwap)],
-    ['VWAP distance', latest && sessionVwap != null ? `${n((latest.close / sessionVwap - 1) * 100)}%` : '—'],
-    ['RSI 14', n(indicators.rsi_14, 1)], ['MACD', n(indicators.macd, 3)],
-    ['ATR %', indicators.atr_pct == null ? '—' : `${n(indicators.atr_pct, 2)}%`],
-    ['Session rolling volume ratio', indicators.relative_volume == null ? '—' : `${n(indicators.relative_volume, 2)}×`],
-    ['Volatility regime', String(indicators.volatility_classification || '—')],
-    ['Market regime', String(payload?.market_regime?.classification || '—')],
-    ['Feed', `${snapshot?.feed || status?.feed || 'Unavailable'}`],
-    ['Latest market candle', formatTime(snapshot?.latest_timestamp || status?.latest_completed_rth_candle, true)],
-    ['Analysis input candle', formatTime(payload?.candle_timestamp, true)],
-  ];
-  return <section className="terminal-panel market-stats-panel">
-    <div className="terminal-section-head"><div><span className="terminal-kicker">VERIFIED INPUTS</span><h3>Market statistics</h3></div><span className="terminal-badge">{sessionDate ? formatDate(sessionDate) : 'NO SESSION'}</span></div>
-    <div className="stat-rows">{items.map(([label, value]) => <div className="stat-row" key={label}><span>{label}</span><b>{value}</b></div>)}</div>
-    <p className="tiny-disclaimer">Session rolling volume ratio = current 5-minute candle volume ÷ mean of up to 20 observed completed bars in the same ET session (includes current bar). It is not same-time-slot historical RVOL. Analysis indicator values are as of {formatTime(payload?.candle_timestamp, true)}. Session VWAP uses actual OHLCV bars.</p>
-    {indicators.relative_volume != null && <p className="tiny-disclaimer">Volume breakdown: {n(indicators.volume, 0)} current shares ÷ {n(indicators.volume_sma_20, 2)} same-session mean across {n(volumeSampleCount, 0)} observed bars.</p>}
-  </section>;
+const componentLabels: Record<string, string> = {
+  trend: 'Moving average structure evidence',
+  momentum: 'RSI / MACD momentum',
+  volume: 'Signed session rolling volume evidence',
+  structure: 'Market structure',
+  price_action: 'Candle price action',
+  ml: 'Production ML evidence',
+};
+
+const etDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/New_York',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+function formatStatus(val: unknown) {
+  if (val == null || val === '') return '—';
+  return String(val).replaceAll('_', ' ');
 }
 
-export function AnalysisPanel({ record, market, dataStatus, fresh, marketClosed = false, latestAligned }: {
-  record: SignalRecord | null; market: MarketSnapshot | null; dataStatus: DataSnapshotStatus | null; fresh: boolean; marketClosed?: boolean; latestAligned: boolean;
+function formatEvidenceItem(item: unknown, indicators?: AnalysisPayload['indicators']) {
+  if (typeof item !== 'string') return String(item ?? '');
+  if (item.startsWith('Trend alignment is ')) {
+    return `Moving average structure is ${String(indicators?.trend_classification || 'unavailable')} (EMA 9/20/50 ordering and slopes); this is separate from 1H/15M/5M trend alignment.`;
+  }
+  return item.replace(/^Relative volume=/, 'Session rolling volume ratio=');
+}
+
+export function AnalysisPanel({
+  record,
+  intelligence,
+  intelligenceError,
+  market,
+  dataStatus,
+  fresh,
+  marketClosed = false,
+  latestAligned,
+}: {
+  record: SignalRecord | null;
+  intelligence?: MarketIntelligence | null;
+  intelligenceError?: string;
+  market: MarketSnapshot | null;
+  dataStatus: DataSnapshotStatus | null;
+  fresh: boolean;
+  marketClosed?: boolean;
+  latestAligned: boolean;
 }) {
   const payload = record?.payload;
   const ml = payload?.ml_evidence;
   const risk = payload?.risk_plan;
-  const components = Object.entries(payload?.component_contributions || {}).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
-  const scale = Math.max(.0001, ...components.map(([, value]) => Math.abs(value)));
+
+  // Formula notes visibility drawer
+  const [showFormulas, setShowFormulas] = useState(false);
+
+  // Market Intelligence extracted data
+  const orb = intelligence?.opening_range || {};
+  const rvol = intelligence?.rvol || {};
+  const levels = (intelligence?.previous_day_levels || {}) as Record<string, unknown>;
+  const distance =
+    levels.distance && typeof levels.distance === 'object'
+      ? (levels.distance as Record<string, unknown>)
+      : {};
+
+  // Timeframe trend breakdown (1H, 15M, 5M)
+  const timeframes = intelligence?.trend_alignment?.timeframes || [
+    { timeframe: '1H', trend: 'LOADING', bars: null },
+    { timeframe: '15M', trend: 'LOADING', bars: null },
+    { timeframe: '5M', trend: 'LOADING', bars: null },
+  ];
+  const trend1H = String(timeframes.find((t) => t.timeframe === '1H')?.trend || 'NEUTRAL').toUpperCase();
+  const bars1H = timeframes.find((t) => t.timeframe === '1H')?.bars;
+  const trend15M = String(timeframes.find((t) => t.timeframe === '15M')?.trend || 'NEUTRAL').toUpperCase();
+  const bars15M = timeframes.find((t) => t.timeframe === '15M')?.bars;
+  const trend5M = String(timeframes.find((t) => t.timeframe === '5M')?.trend || 'NEUTRAL').toUpperCase();
+  const bars5M = timeframes.find((t) => t.timeframe === '5M')?.bars;
+
+  const alignmentOverall = intelligence?.trend_alignment?.overall || 'LOADING';
+  const isAligned = alignmentOverall.includes('ALIGNED');
+
+  // Final Decision Classification
   const classification = record?.classification || payload?.classification || 'UNAVAILABLE';
-  const decisionClass = classification === 'BUY' ? 'decision-buy' : classification === 'SELL' ? 'decision-sell' : classification === 'HOLD' ? 'decision-hold' : 'decision-wait';
-  return <div className="analysis-column">
-    <section className="terminal-panel analysis-main-panel">
-      <div className="terminal-section-head"><div><span className="terminal-kicker">AI MARKET ANALYSIS</span><h2>Decision engine</h2></div><span className={`terminal-badge ${fresh ? 'badge-good' : marketClosed ? 'badge-muted' : 'badge-warn'}`}>{fresh ? 'INPUT FRESH' : marketClosed ? 'MARKET CLOSED' : 'INPUT STALE'}</span></div>
-      {!record || !payload ? <div className="terminal-empty"><b>Analysis unavailable</b><span>No stored analysis record was returned. Use “Analyze latest candle” to request one against the local completed-bar snapshot.</span></div> : <>
-        {!latestAligned && <div className="inline-warning">Stored analysis is for {formatTime(record.candle_timestamp, true)}. It does not match the latest available market candle.</div>}
-        <div className={`decision-banner ${decisionClass}`}>
-          <span>FINAL DECISION</span><strong>{classification}</strong>
-          <div className="decision-meta"><span>Final decision-engine score <b>{n(payload.final_decision_score, 3)}</b></span></div>
-          <small>Weighted heuristic score · not a probability or confidence</small>
+  const decisionSlug =
+    classification === 'BUY'
+      ? 'buy'
+      : classification === 'SELL'
+      ? 'sell'
+      : classification === 'HOLD'
+      ? 'hold'
+      : 'wait';
+
+  // Directional Evidence helpers
+  const maClassification = String(payload?.indicators?.trend_classification || 'Not reported');
+  const maTone = maClassification.includes('BULLISH')
+    ? 'pos'
+    : maClassification.includes('BEARISH')
+    ? 'neg'
+    : 'neutral';
+
+  const shortTermBias = payload?.directional_bias || 'Neutral';
+  const shortTermTone =
+    shortTermBias.toUpperCase().includes('BULL')
+      ? 'pos'
+      : shortTermBias.toUpperCase().includes('BEAR')
+      ? 'neg'
+      : 'neutral';
+
+  // Heuristic Component Contributions
+  const components = useMemo(() => {
+    const raw = Object.entries(payload?.component_contributions || {});
+    return raw
+      .filter((entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1]))
+      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  }, [payload?.component_contributions]);
+
+  const scale = useMemo(() => {
+    if (!components.length) return 1;
+    return Math.max(0.0001, ...components.map(([, val]) => Math.abs(val)));
+  }, [components]);
+
+  // Evidence counts
+  const bullishCount = payload?.bullish_evidence?.length || 0;
+  const bearishCount = payload?.bearish_evidence?.length || 0;
+  const neutralCount = payload?.neutral_observations?.length || 0;
+
+  // Market Statistics computations
+  const candles = market?.candles || [];
+  const latestCandle = candles.at(-1);
+  const sessionDate = latestCandle?.timestamp
+    ? (() => {
+        try {
+          const d = new Date(latestCandle.timestamp);
+          return Number.isNaN(d.getTime()) ? '' : etDateFormatter.format(d);
+        } catch {
+          return '';
+        }
+      })()
+    : '';
+  const sessionBars = sessionDate
+    ? candles.filter((c) => {
+        try {
+          const d = new Date(c.timestamp);
+          return !Number.isNaN(d.getTime()) && etDateFormatter.format(d) === sessionDate;
+        } catch {
+          return false;
+        }
+      })
+    : [];
+  const high = sessionBars.length ? Math.max(...sessionBars.map((c) => c.high)) : null;
+  const low = sessionBars.length ? Math.min(...sessionBars.map((c) => c.low)) : null;
+  let pv = 0;
+  let volume = 0;
+  for (const c of sessionBars) {
+    pv += ((c.high + c.low + c.close) / 3) * c.volume;
+    volume += c.volume;
+  }
+  const sessionVwap = volume ? pv / volume : null;
+  const indicators = payload?.indicators || {};
+  const analysisTime = payload?.candle_timestamp ? new Date(payload.candle_timestamp).getTime() : NaN;
+  const analysisDate = payload?.candle_timestamp
+    ? (() => {
+        try {
+          const d = new Date(payload.candle_timestamp);
+          return Number.isNaN(d.getTime()) ? '' : etDateFormatter.format(d);
+        } catch {
+          return '';
+        }
+      })()
+    : '';
+  const analysisSessionBars =
+    Number.isFinite(analysisTime) && analysisDate
+      ? candles.filter((c) => {
+          try {
+            const d = new Date(c.timestamp);
+            return !Number.isNaN(d.getTime()) && etDateFormatter.format(d) === analysisDate && d.getTime() <= analysisTime;
+          } catch {
+            return false;
+          }
+        })
+      : [];
+  const volumeSampleCount =
+    typeof indicators.volume_observation_count_20 === 'number'
+      ? indicators.volume_observation_count_20
+      : analysisSessionBars.some((c) => new Date(c.timestamp).getTime() === analysisTime)
+      ? Math.min(20, analysisSessionBars.length)
+      : null;
+
+  // 15 Verified Market Statistics fields
+  const cvdRaw = indicators.cvd ?? indicators.cumulative_volume_delta;
+  const statItems: Array<{ label: string; value: string; tooltip?: string }> = [
+    { label: 'Last completed close', value: price(latestCandle?.close) },
+    { label: 'Session high / low', value: high == null || low == null ? '—' : `${price(high)} / ${price(low)}` },
+    { label: 'Session range', value: high == null || low == null ? '—' : price(high - low) },
+    { label: 'Session VWAP*', value: price(sessionVwap), tooltip: 'Volume-Weighted Average Price computed from actual completed 5m OHLCV bars' },
+    { label: 'VWAP distance', value: latestCandle && sessionVwap != null ? `${n(((latestCandle.close / sessionVwap) - 1) * 100)}%` : '—' },
+    { label: 'CVD', value: cvdRaw != null ? n(cvdRaw, 2) : '—', tooltip: 'Cumulative Volume Delta' },
+    { label: 'RSI 14', value: n(indicators.rsi_14, 1), tooltip: '14-period Relative Strength Index momentum oscillator' },
+    { label: 'MACD', value: n(indicators.macd, 3), tooltip: 'Moving Average Convergence Divergence' },
+    { label: 'ATR percentage', value: indicators.atr_pct == null ? '—' : `${n(indicators.atr_pct, 2)}%`, tooltip: 'Average True Range expressed as percentage of price' },
+    {
+      label: 'Session rolling volume ratio',
+      value: indicators.relative_volume == null ? '—' : `${n(indicators.relative_volume, 2)}×`,
+      tooltip: 'Current 5m candle volume ÷ mean of up to 20 completed bars in the SAME session. Distinct from historical same-slot RVOL.',
+    },
+    { label: 'Volatility regime', value: formatStatus(indicators.volatility_classification) },
+    { label: 'Market regime', value: formatStatus(payload?.market_regime?.classification) },
+    { label: 'Feed', value: String(market?.feed || dataStatus?.feed || 'Unavailable') },
+    { label: 'Latest market candle', value: formatTime(market?.latest_timestamp || dataStatus?.latest_completed_rth_candle, true) },
+    { label: 'Analysis input candle', value: formatTime(payload?.candle_timestamp, true) },
+  ];
+
+  return (
+    <div className="tp-container" aria-label="AMZN AI Trading Decision Terminal">
+      {/* =========================================================================
+          1. MARKET OVERVIEW (Clean, spacious and compact)
+          ========================================================================= */}
+      <section className="tp-card tp-overview-card" aria-label="Section 1: Market Overview">
+        <div className="tp-card-header">
+          <h2 className="tp-heading">Market Overview</h2>
+          <div className="tp-badge-group">
+            <span className={`tp-status-pill ${marketClosed ? 'pill-muted' : fresh ? 'pill-green' : 'pill-amber'}`}>
+              {marketClosed ? 'Market Closed' : fresh ? 'Data Fresh' : 'Data Stale'}
+            </span>
+            <span className={`tp-status-pill ${isAligned ? 'pill-blue' : 'pill-amber'}`}>
+              {alignmentOverall}
+            </span>
+          </div>
         </div>
-        <div className="direction-breakdown" aria-label="Decision evidence layers">
-          <div><small>MOVING AVERAGE STRUCTURE</small><b>{String(payload.indicators?.trend_classification || 'Not reported')}</b><span>EMA 9/20/50 ordering and slopes · as of {formatTime(record.candle_timestamp, true)}</span></div>
-          <div><small>SHORT-TERM DIRECTIONAL EVIDENCE</small><b>{payload.directional_bias || 'Not reported'}</b><span>Technical score {n(payload.technical_score, 3)}</span></div>
-          <div><small>ML DIRECTIONAL SIGNAL</small><b>{ml?.available ? ml.direction || 'Not reported' : 'Unavailable'}</b><span>Raw score shown separately below</span></div>
-          <div><small>FINAL DECISION</small><b>{classification}</b><span>Decision-engine result</span></div>
+
+        {intelligenceError && <div className="tp-alert-box error">{intelligenceError}</div>}
+
+        {/* 3 Prominent Timeframe Trend Cards */}
+        <div className="tp-trend-grid">
+          <div className={`tp-trend-tile trend-${trend1H.toLowerCase()}`}>
+            <span className="tp-tile-label">1H Trend</span>
+            <b className="tp-tile-val">{trend1H}</b>
+            <span className="tp-tile-sub">{bars1H != null ? `${Number(bars1H).toLocaleString()} bars` : '—'}</span>
+          </div>
+          <div className={`tp-trend-tile trend-${trend15M.toLowerCase()}`}>
+            <span className="tp-tile-label">15M Trend</span>
+            <b className="tp-tile-val">{trend15M}</b>
+            <span className="tp-tile-sub">{bars15M != null ? `${Number(bars15M).toLocaleString()} bars` : '—'}</span>
+          </div>
+          <div className={`tp-trend-tile trend-${trend5M.toLowerCase()}`}>
+            <span className="tp-tile-label">5M Trend</span>
+            <b className="tp-tile-val">{trend5M}</b>
+            <span className="tp-tile-sub">{bars5M != null ? `${Number(bars5M).toLocaleString()} bars` : '—'}</span>
+          </div>
         </div>
-        <div className="analysis-meta-grid">
-          <div><small>MARKET REGIME</small><b>{payload.market_regime?.classification || '—'}</b></div>
-          <div><small>ANALYSIS GENERATED</small><b>{formatTime(record.generated_at, true)}</b></div>
-          <div><small>ANALYSIS INPUT CANDLE</small><b>{formatTime(record.candle_timestamp, true)}</b><span className="meta-subvalue">Close {price(typeof payload.indicators?.close === 'number' ? payload.indicators.close : null)}</span></div>
-          <div><small>RECORD STATUS</small><b className="capitalize">{record.status.replaceAll('_', ' ')}</b></div>
+
+        {!latestAligned && record && (
+          <div className="tp-alert-box warning">
+            Analysis is based on completed candle at {formatTime(record.candle_timestamp, true)}. Does not match latest market candle.
+          </div>
+        )}
+      </section>
+
+      {/* =========================================================================
+          2. ML MODEL PREDICTION (Dedicated Prominent Component)
+          ========================================================================= */}
+      <section className="tp-card tp-ml-card" aria-label="Section 2: ML Model Prediction">
+        <div className="tp-card-header">
+          <h3 className="tp-heading">ML Model Prediction</h3>
+          <span className="tp-horizon-pill">Horizon: Next 10 Minutes</span>
         </div>
-        <div className="ml-signal-card">
-          <div className="ml-heading"><div><span className="terminal-kicker">FROZEN PRODUCTION MODEL</span><b>{ml?.available ? ml.direction : 'ML UNAVAILABLE'}</b></div><span className="terminal-badge">{ml?.model_version || 'MODEL UNKNOWN'}</span></div>
-          <div className="ml-score-row"><span>RAW ML SCORE — NOT CALIBRATED CONFIDENCE</span><b>{ml?.available && ml.raw_probability_up != null ? `${(ml.raw_probability_up * 100).toFixed(1)}% P(UP)` : '—'}</b></div>
-          <div className="ml-score-track"><i style={{ width: `${ml?.available && ml.raw_probability_up != null ? Math.max(0, Math.min(100, ml.raw_probability_up * 100)) : 0}%` }} /></div>
-          <small>{ml?.model_name || '—'} · {ml?.input_feature_count ?? '—'} ordered inputs · model output is directional evidence only</small>
-          {!ml?.available && ml?.reason && <small className="negative-copy">{ml.reason}</small>}
+
+        {ml?.available && ml.raw_probability_up != null ? (
+          (() => {
+            const rawUp = ml.raw_probability_up;
+            const rawDown = Math.max(0, Math.min(1, 1.0 - rawUp));
+            const upPct = (rawUp * 100).toFixed(1);
+            const downPct = (rawDown * 100).toFixed(1);
+            const isUp = ml.direction === 'UP';
+
+            return (
+              <div className="tp-ml-content">
+                {/* Big Direction Callout */}
+                <div className="tp-ml-verdict-row">
+                  <span className="tp-ml-verdict-label">Model Direction</span>
+                  <b className={`tp-ml-direction ${isUp ? 'tone-up' : 'tone-down'}`}>
+                    {ml.direction || (rawUp >= 0.5 ? 'UP' : 'DOWN')}
+                  </b>
+                </div>
+
+                {/* Score Labels Row */}
+                <div className="tp-ml-score-row">
+                  <div className="tp-ml-score-col score-up">
+                    <span className="score-label">Raw P(UP)</span>
+                    <b className="score-val">{upPct}%</b>
+                  </div>
+                  <div className="tp-ml-score-col score-down">
+                    <span className="score-label">Raw P(DOWN)</span>
+                    <b className="score-val">{downPct}%</b>
+                  </div>
+                </div>
+
+                {/* Horizontal Two-Sided Split Bar */}
+                <div
+                  className="tp-split-bar-track"
+                  title={`Raw P(UP): ${upPct}%, Raw P(DOWN): ${downPct}%`}
+                  role="progressbar"
+                  aria-valuenow={Number(upPct)}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                >
+                  <div
+                    className="tp-split-segment seg-up"
+                    style={{ width: `${upPct}%` }}
+                  />
+                  <div
+                    className="tp-split-segment seg-down"
+                    style={{ width: `${downPct}%` }}
+                  />
+                </div>
+
+                {/* Uncalibrated Warning & Secondary Metadata */}
+                <div className="tp-ml-footer">
+                  <span className="tp-uncalibrated-tag">
+                    Raw model scores — uncalibrated (not confidence or profit probability)
+                  </span>
+                  <span className="tp-ml-meta">
+                    {ml.model_name || 'LGBMClassifier'} ({ml.model_version || 'legacy-10m'}) · {ml.input_feature_count ?? 40} inputs
+                  </span>
+                </div>
+              </div>
+            );
+          })()
+        ) : (
+          <div className="tp-ml-unavailable">
+            <span className="tp-ml-unavail-title">ML Prediction Unavailable</span>
+            <p className="tp-ml-unavail-msg">
+              {ml?.reason || 'Insufficient market history or feature warm-up for 40-feature model inference.'}
+            </p>
+          </div>
+        )}
+      </section>
+
+      {/* =========================================================================
+          3. FINAL TRADING DECISION (Distinct Component)
+          ========================================================================= */}
+      <section className={`tp-hero-card decision-${decisionSlug}`} aria-label="Section 3: Final Trading Decision">
+        <div className="tp-hero-top">
+          <span className="tp-hero-eyebrow">Final Trading Decision</span>
+          <span className="tp-hero-score">
+            Engine Score: <b>{payload?.final_decision_score != null ? n(payload.final_decision_score, 3) : '—'}</b>
+          </span>
         </div>
-        {payload.conflicting_signals?.length ? <div className="inline-warning"><b>Trend and immediate evidence may disagree</b><ul>{payload.conflicting_signals.map((item) => <li key={item}>{item}</li>)}</ul></div> : null}
-        <div className="evidence-grid">
-          <Evidence title="Bullish evidence" entries={payload.bullish_evidence || []} kind="positive" indicators={payload.indicators} />
-          <Evidence title="Bearish evidence" entries={payload.bearish_evidence || []} kind="negative" indicators={payload.indicators} />
-          <Evidence title="Neutral observations" entries={payload.neutral_observations || []} kind="neutral" indicators={payload.indicators} />
+        <div className="tp-hero-verdict">{classification}</div>
+        <div className="tp-hero-footnote">
+          Weighted heuristic score · not a probability or confidence
         </div>
-        <details className="reason-block"><summary><span className="terminal-kicker">DECISION EXPLANATION · BACKEND REASONS</span></summary>{(payload.reasons || []).map((reason) => <p key={reason}>{reason}</p>)}
-          {payload.required_confirmation && <p><b>Required confirmation:</b> {payload.required_confirmation}</p>}
-        </details>
-        <div className="contribution-block"><div className="terminal-section-head"><div><span className="terminal-kicker">ENGINE COMPONENTS</span><h3>Decision contributions</h3></div><span className="subtle-label">not ML feature importance</span></div>
-          {components.length ? components.map(([name, value]) => <div className="contribution-row" key={name}>
-            <span>{componentLabels[name] || name.replaceAll('_', ' ')}</span><div className="contribution-track"><i className={value >= 0 ? 'positive-fill' : 'negative-fill'} style={{ width: `${Math.abs(value) / scale * 100}%` }} /></div><b className={value >= 0 ? 'positive-copy' : 'negative-copy'}>{value >= 0 ? '+' : ''}{value.toFixed(3)}</b>
-          </div>) : <span className="muted-copy">Contributions are unavailable.</span>}
+      </section>
+
+      {!record || !payload ? (
+        <div className="tp-card tp-empty-card">
+          <b>Analysis unavailable</b>
+          <p>No stored analysis record was returned. Click “Analyze latest candle” above to compute a fresh decision.</p>
         </div>
-        <div className="risk-block"><div className="terminal-section-head"><div><span className="terminal-kicker">HYPOTHETICAL TRADE SETUP</span><h3>Risk management</h3></div><span className={`terminal-badge ${risk?.valid ? 'badge-good' : 'badge-muted'}`}>{risk?.valid ? 'VALID PLAN' : 'NOT ACTIONABLE'}</span></div>
-          {risk?.valid ? <>
-            <div className="risk-level-grid">
-              <Level title="TRIGGER PRICE" value={price(risk.trigger_price)} />
-              <Level title="ENTRY ZONE" value={risk.entry_zone ? `${price(risk.entry_zone.lower)} – ${price(risk.entry_zone.upper)}` : '—'} />
-              <Level title="STOP LOSS" value={price(risk.stop_loss)} tone="negative-copy" />
-              <Level title="TARGET 1" value={price(risk.target_1)} tone="positive-copy" />
-              <Level title="TARGET 2" value={price(risk.target_2)} tone="positive-copy" />
-              <Level title="TARGET 2 R/R" value={risk.risk_reward_ratio == null ? '—' : `${risk.risk_reward_ratio.toFixed(2)} : 1`} />
+      ) : (
+        <>
+          {/* =====================================================================
+              4. DIRECTIONAL EVIDENCE
+              ===================================================================== */}
+          <section className="tp-card" aria-label="Section 4: Directional Evidence">
+            <div className="tp-card-header">
+              <h3 className="tp-heading">Directional Evidence</h3>
             </div>
-            <small>ATR {price(risk.atr_reference)} · stop: {risk.stop_method || '—'} · target: {risk.target_method || '—'}</small>
-          </> : <div className="terminal-empty compact"><span>{risk?.reason || 'No approved hypothetical trade plan for this decision.'}</span>{payload.setup_invalidation && <small>Invalidation: {payload.setup_invalidation}</small>}</div>}
-        </div>
-      </>}
-    </section>
-    <MarketStatistics snapshot={market} status={dataStatus} payload={payload} />
-  </div>;
-}
 
-function Evidence({ title, entries, kind, indicators }: { title: string; entries: string[]; kind: string; indicators?: AnalysisPayload['indicators'] }) {
-  const [expanded, setExpanded] = useState(false);
-  const visible = expanded ? entries : entries.slice(0, 3);
-  const present = (item: string) => {
-    if (item.startsWith('Trend alignment is ')) {
-      return `Moving average structure is ${String(indicators?.trend_classification || 'unavailable')} (EMA 9/20/50 ordering and slopes); this is separate from 1H/15M/5M trend alignment.`;
-    }
-    return item.replace(/^Relative volume=/, 'Session rolling volume ratio=');
-  };
-  return <section className={`evidence-box ${kind}`}><h4>{title}</h4>{entries.length ? <><ul>{visible.map((item) => <li key={item}>{present(item)}</li>)}</ul>{entries.length > 3 && <button className="evidence-expand" onClick={() => setExpanded((value) => !value)}>{expanded ? 'Show less' : `Show all ${entries.length}`}</button>}</> : <p>No items returned.</p>}</section>;
-}
+            <div className="tp-evidence-grid">
+              {/* 1. Moving Average Structure */}
+              <div className="tp-evidence-item">
+                <span className="tp-item-label">Moving Average Structure</span>
+                <b className={`tp-item-val tone-${maTone}`}>{formatStatus(maClassification)}</b>
+                <span className="tp-item-sub">EMA 9/20/50 ordering & slopes</span>
+              </div>
 
-function Level({ title, value, tone = '' }: { title: string; value: string; tone?: string }) {
-  return <div className="risk-level"><small>{title}</small><b className={tone}>{value}</b></div>;
+              {/* 2. Short-Term Technical Evidence */}
+              <div className="tp-evidence-item">
+                <span className="tp-item-label">Short-Term Technical Evidence</span>
+                <b className={`tp-item-val tone-${shortTermTone}`}>{shortTermBias}</b>
+                <span className="tp-item-sub">Technical score: {n(payload.technical_score, 3)}</span>
+              </div>
+
+              {/* 3. Market Regime */}
+              <div className="tp-evidence-item">
+                <span className="tp-item-label">Market Regime</span>
+                <b className="tp-item-val">{formatStatus(payload.market_regime?.classification)}</b>
+                <span className="tp-item-sub">Based on ATR & range expansion</span>
+              </div>
+            </div>
+          </section>
+
+          {/* =====================================================================
+              5. IMPORTANT MARKET INTELLIGENCE
+              ===================================================================== */}
+          <section className="tp-card" aria-label="Section 5: Market Intelligence">
+            <div className="tp-card-header">
+              <h3 className="tp-heading">Market Intelligence</h3>
+            </div>
+
+            <div className="tp-intel-list">
+              {/* 15-Minute Opening Range */}
+              <div className="tp-intel-row">
+                <div className="tp-intel-header-row">
+                  <span className="tp-intel-name">15M Opening Range</span>
+                  <span className="tp-intel-pill">{formatStatus(orb.classification || orb.status)}</span>
+                </div>
+                <div className="tp-intel-values">
+                  <span>High <b>{price(number(orb.high))}</b></span>
+                  <span className="tp-sep">·</span>
+                  <span>Low <b>{price(number(orb.low))}</b></span>
+                  <span className="tp-sep">·</span>
+                  <span>Mid <b>{price(number(orb.midpoint))}</b></span>
+                </div>
+              </div>
+
+              {/* Historical Same-Slot RVOL */}
+              <div
+                className="tp-intel-row"
+                title="Historical Same-Slot RVOL: Volume compared to historical average for this exact time slot across prior sessions."
+              >
+                <div className="tp-intel-header-row">
+                  <span className="tp-intel-name">Historical Same-Slot RVOL</span>
+                  <span className="tp-intel-pill">
+                    {number(rvol.rvol) != null ? `${number(rvol.rvol)!.toFixed(2)}× · ${formatStatus(rvol.classification)}` : formatStatus(rvol.classification)}
+                  </span>
+                </div>
+                <div className="tp-intel-values">
+                  <span><b>{text(rvol.current_volume)}</b> current ÷ <b>{number(rvol.average_same_slot_volume) != null ? number(rvol.average_same_slot_volume)!.toFixed(2) : '—'}</b> avg</span>
+                  <span className="tp-sep">·</span>
+                  <span className="tp-muted-meta">{text(rvol.sample_count)} sessions · {text(rvol.slot_et)} ET</span>
+                </div>
+              </div>
+
+              {/* Previous Session Levels */}
+              <div className="tp-intel-row">
+                <div className="tp-intel-header-row">
+                  <span className="tp-intel-name">Previous Session ({text(levels.session_date)})</span>
+                  {number(distance.close) != null && (
+                    <span className={`tp-intel-pill ${number(distance.close)! >= 0 ? 'pos' : 'neg'}`}>
+                      Δ close {price(number(distance.close))}
+                    </span>
+                  )}
+                </div>
+                <div className="tp-intel-values">
+                  <span>High <b>{price(number(levels.high))}</b></span>
+                  <span className="tp-sep">·</span>
+                  <span>Low <b>{price(number(levels.low))}</b></span>
+                  <span className="tp-sep">·</span>
+                  <span>Close <b>{price(number(levels.close))}</b></span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* =====================================================================
+              6. DECISION REASONING
+              ===================================================================== */}
+          <section className="tp-card" aria-label="Section 6: Decision Reasoning">
+            <div className="tp-card-header">
+              <h3 className="tp-heading">Decision Reasoning</h3>
+              <span className="tp-pill-counter">
+                {bullishCount} Bullish · {bearishCount} Bearish · {neutralCount} Neutral
+              </span>
+            </div>
+
+            {/* Conflict Warnings */}
+            {payload.conflicting_signals?.length ? (
+              <div className="tp-conflict-callout">
+                <b>Evidence Disagreement</b>
+                <ul>
+                  {payload.conflicting_signals.map((sig, i) => (
+                    <li key={i}>{sig}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {/* Evidence Lists */}
+            <div className="tp-evidence-sections">
+              {bullishCount > 0 && (
+                <div className="tp-evidence-group group-bullish">
+                  <h4 className="tp-group-heading">Bullish Evidence</h4>
+                  <ul className="tp-list">
+                    {payload.bullish_evidence?.map((item, i) => (
+                      <li key={i}>{formatEvidenceItem(item, payload.indicators)}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {bearishCount > 0 && (
+                <div className="tp-evidence-group group-bearish">
+                  <h4 className="tp-group-heading">Bearish Evidence</h4>
+                  <ul className="tp-list">
+                    {payload.bearish_evidence?.map((item, i) => (
+                      <li key={i}>{formatEvidenceItem(item, payload.indicators)}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {neutralCount > 0 && (
+                <div className="tp-evidence-group group-neutral">
+                  <h4 className="tp-group-heading">Neutral Observations</h4>
+                  <ul className="tp-list">
+                    {payload.neutral_observations?.map((item, i) => (
+                      <li key={i}>{formatEvidenceItem(item, payload.indicators)}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            {/* Backend Decision Reasons */}
+            {payload.reasons?.length ? (
+              <div className="tp-reasons-group">
+                <h4 className="tp-group-heading">Decision Engine Evaluation Rules</h4>
+                <ul className="tp-list">
+                  {payload.reasons.map((r, i) => (
+                    <li key={i}>{r}</li>
+                  ))}
+                </ul>
+                {payload.required_confirmation && (
+                  <div className="tp-confirmation-box">
+                    <b>Confirmation Required:</b> {payload.required_confirmation}
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </section>
+
+          {/* =====================================================================
+              7. DECISION ENGINE CONTRIBUTIONS
+              ===================================================================== */}
+          <section className="tp-card" aria-label="Section 7: Decision Engine Contributions">
+            <div className="tp-card-header">
+              <h3 className="tp-heading">Decision Engine Contributions</h3>
+              <span className="tp-pill-counter">Not ML feature importance</span>
+            </div>
+
+            <div className="tp-contrib-group">
+              <div className="tp-contrib-rows">
+                {components.length ? (
+                  components.map(([name, val]) => {
+                    const isPos = val >= 0;
+                    const pct = scale > 0 ? (Math.abs(val) / scale) * 100 : 0;
+                    return (
+                      <div className="tp-contrib-row" key={name}>
+                        <span className="tp-contrib-label">
+                          {componentLabels[name] || name.replaceAll('_', ' ')}
+                        </span>
+                        <div className="tp-contrib-track">
+                          <div
+                            className={`tp-contrib-fill ${isPos ? 'pos' : 'neg'}`}
+                            style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
+                          />
+                        </div>
+                        <span className={`tp-contrib-score ${isPos ? 'pos' : 'neg'}`}>
+                          {isPos ? '+' : ''}{val.toFixed(3)}
+                        </span>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <span className="tp-muted-meta">Component contributions unavailable.</span>
+                )}
+              </div>
+            </div>
+          </section>
+
+          {/* =====================================================================
+              8. RISK MANAGEMENT / TRADE PLAN
+              ===================================================================== */}
+          <section className="tp-card" aria-label="Section 8: Risk Management">
+            <div className="tp-card-header">
+              <h3 className="tp-heading">Risk Management</h3>
+              <span className={`tp-status-pill ${risk?.valid ? 'pill-green' : 'pill-muted'}`}>
+                {risk?.valid ? 'VALID PLAN' : 'NOT ACTIONABLE'}
+              </span>
+            </div>
+
+            {risk?.valid ? (
+              <div className="tp-plan-content">
+                <div className="tp-plan-grid">
+                  <div className="tp-plan-tile">
+                    <span className="tp-tile-label">Trigger Price</span>
+                    <b className="tp-plan-val">{price(risk.trigger_price)}</b>
+                  </div>
+                  <div className="tp-plan-tile">
+                    <span className="tp-tile-label">Entry Zone</span>
+                    <b className="tp-plan-val">
+                      {risk.entry_zone ? `${price(risk.entry_zone.lower)} – ${price(risk.entry_zone.upper)}` : '—'}
+                    </b>
+                  </div>
+                  <div className="tp-plan-tile">
+                    <span className="tp-tile-label">Stop Loss</span>
+                    <b className="tp-plan-val tone-neg">{price(risk.stop_loss)}</b>
+                  </div>
+                  <div className="tp-plan-tile">
+                    <span className="tp-tile-label">Target 1</span>
+                    <b className="tp-plan-val tone-pos">{price(risk.target_1)}</b>
+                  </div>
+                  <div className="tp-plan-tile">
+                    <span className="tp-tile-label">Target 2</span>
+                    <b className="tp-plan-val tone-pos">{price(risk.target_2)}</b>
+                  </div>
+                  <div className="tp-plan-tile">
+                    <span className="tp-tile-label">Reward / Risk</span>
+                    <b className="tp-plan-val">
+                      {risk.risk_reward_ratio != null ? `${risk.risk_reward_ratio.toFixed(2)} : 1` : '—'}
+                    </b>
+                  </div>
+                </div>
+                <div className="tp-plan-meta">
+                  ATR reference {price(risk.atr_reference)} · Stop: {risk.stop_method || '—'} · Target: {risk.target_method || '—'}
+                </div>
+              </div>
+            ) : (
+              <div className="tp-no-plan-box">
+                <p className="tp-no-plan-text">
+                  No actionable setup is approved at this candle.
+                </p>
+                <span className="tp-invalidation-text">
+                  Invalidation: {payload.setup_invalidation || 'No active setup exists to invalidate.'}
+                </span>
+              </div>
+            )}
+          </section>
+
+          {/* =====================================================================
+              9. VERIFIED INPUTS / MARKET STATISTICS
+              ===================================================================== */}
+          <section className="tp-card" aria-label="Section 9: Market Statistics">
+            <div className="tp-card-header">
+              <h3 className="tp-heading">Verified Inputs / Market Statistics</h3>
+              <span className="tp-pill-counter">15 Verified Fields</span>
+            </div>
+
+            <div className="tp-stats-table">
+              {statItems.map((item, idx) => (
+                <div className="tp-stat-item" key={idx} title={item.tooltip}>
+                  <span className="tp-stat-label">{item.label}</span>
+                  <b className="tp-stat-value">{item.value}</b>
+                </div>
+              ))}
+            </div>
+
+            {/* Calculation definitions drawer */}
+            <div className="tp-notes-drawer">
+              <button
+                type="button"
+                className="tp-notes-toggle"
+                onClick={() => setShowFormulas((prev) => !prev)}
+              >
+                <span>{showFormulas ? '▾ Hide Volume & Formula Notes' : '▸ Volume & Formula Notes'}</span>
+              </button>
+
+              {showFormulas && (
+                <div className="tp-notes-body">
+                  <p>
+                    <strong>1. Historical Same-Slot RVOL (Section 5):</strong> Current candle volume compared to the historical average for this exact time slot across prior completed trading sessions. Formula: current candle volume ÷ average volume for the same time slot across previous sessions.
+                  </p>
+                  <p>
+                    <strong>2. Session Rolling Volume Ratio (Stat 10):</strong> Current candle volume compared against the mean of up to 20 completed 5-minute bars in the <em>same</em> active ET session.
+                  </p>
+                  {indicators.relative_volume != null && (
+                    <div className="tp-notes-calc">
+                      Session volume breakdown: <b>{n(indicators.volume, 0)}</b> current shares ÷ <b>{n(indicators.volume_sma_20, 2)}</b> same-session mean across <b>{n(volumeSampleCount, 0)}</b> observed bars.
+                    </div>
+                  )}
+                  <span className="tp-notes-footnote">
+                    Session VWAP is calculated from actual 5m OHLCV bars. Indicator values as of {formatTime(payload?.candle_timestamp, true)}.
+                  </span>
+                </div>
+              )}
+            </div>
+          </section>
+        </>
+      )}
+    </div>
+  );
 }
