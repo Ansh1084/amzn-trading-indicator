@@ -3,6 +3,7 @@ import type { AnalysisPayload, DataSnapshotStatus, MarketSnapshot, SignalRecord 
 import type { MarketIntelligence } from '../../services/analysisApi';
 import { formatTime, price } from '../../utils/format';
 import { LiveMLPerformancePanel } from './LiveMLPerformancePanel';
+import { Decision60mPanel } from './Decision60mPanel';
 
 const n = (value: unknown, digits = 2) =>
   typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '—';
@@ -347,20 +348,17 @@ export function AnalysisPanel({
       </section>
 
       {/* =========================================================================
-          3. FINAL TRADING DECISION (Distinct Component)
+          3. 60-MINUTE PRIMARY TRADING DECISION SYSTEM
           ========================================================================= */}
-      <section className={`tp-hero-card decision-${decisionSlug}`} aria-label="Section 3: Final Trading Decision">
-        <div className="tp-hero-top">
-          <span className="tp-hero-eyebrow">Final Trading Decision</span>
-          <span className="tp-hero-score">
-            Engine Score: <b>{payload?.final_decision_score != null ? n(payload.final_decision_score, 3) : '—'}</b>
-          </span>
-        </div>
-        <div className="tp-hero-verdict">{classification}</div>
-        <div className="tp-hero-footnote">
-          Weighted heuristic score · not a probability or confidence
-        </div>
-      </section>
+      <Decision60mPanel
+        decision60m={payload?.decision_60m}
+        candleTimestamp={payload?.candle_timestamp}
+        generatedAt={payload?.generated_at}
+        marketClosed={marketClosed}
+        isStale={!fresh}
+        activeSignalStatus={payload?.decision_60m?.active_signal ? `ACTIVE ${payload.decision_60m.active_signal.direction}` : null}
+        ml10Evidence={ml}
+      />
 
       {!record || !payload ? (
         <div className="tp-card tp-empty-card">
@@ -369,38 +367,6 @@ export function AnalysisPanel({
         </div>
       ) : (
         <>
-          {/* =====================================================================
-              4. DIRECTIONAL EVIDENCE
-              ===================================================================== */}
-          <section className="tp-card" aria-label="Section 4: Directional Evidence">
-            <div className="tp-card-header">
-              <h3 className="tp-heading">Directional Evidence</h3>
-            </div>
-
-            <div className="tp-evidence-grid">
-              {/* 1. Moving Average Structure */}
-              <div className="tp-evidence-item">
-                <span className="tp-item-label">Moving Average Structure</span>
-                <b className={`tp-item-val tone-${maTone}`}>{formatStatus(maClassification)}</b>
-                <span className="tp-item-sub">EMA 9/20/50 ordering & slopes</span>
-              </div>
-
-              {/* 2. Short-Term Technical Evidence */}
-              <div className="tp-evidence-item">
-                <span className="tp-item-label">Short-Term Technical Evidence</span>
-                <b className={`tp-item-val tone-${shortTermTone}`}>{shortTermBias}</b>
-                <span className="tp-item-sub">Technical score: {n(payload.technical_score, 3)}</span>
-              </div>
-
-              {/* 3. Market Regime */}
-              <div className="tp-evidence-item">
-                <span className="tp-item-label">Market Regime</span>
-                <b className="tp-item-val">{formatStatus(payload.market_regime?.classification)}</b>
-                <span className="tp-item-sub">Based on ATR & range expansion</span>
-              </div>
-            </div>
-          </section>
-
           {/* =====================================================================
               5. IMPORTANT MARKET INTELLIGENCE
               ===================================================================== */}
@@ -460,122 +426,6 @@ export function AnalysisPanel({
                   <span className="tp-sep">·</span>
                   <span>Close <b>{price(number(levels.close))}</b></span>
                 </div>
-              </div>
-            </div>
-          </section>
-
-          {/* =====================================================================
-              6. DECISION REASONING
-              ===================================================================== */}
-          <section className="tp-card" aria-label="Section 6: Decision Reasoning">
-            <div className="tp-card-header">
-              <h3 className="tp-heading">Decision Reasoning</h3>
-              <span className="tp-pill-counter">
-                {bullishCount} Bullish · {bearishCount} Bearish · {neutralCount} Neutral
-              </span>
-            </div>
-
-            {/* Conflict Warnings */}
-            {payload.conflicting_signals?.length ? (
-              <div className="tp-conflict-callout">
-                <b>Evidence Disagreement</b>
-                <ul>
-                  {payload.conflicting_signals.map((sig, i) => (
-                    <li key={i}>{sig}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-
-            {/* Evidence Lists */}
-            <div className="tp-evidence-sections">
-              {bullishCount > 0 && (
-                <div className="tp-evidence-group group-bullish">
-                  <h4 className="tp-group-heading">Bullish Evidence</h4>
-                  <ul className="tp-list">
-                    {payload.bullish_evidence?.map((item, i) => (
-                      <li key={i}>{formatEvidenceItem(item, payload.indicators)}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {bearishCount > 0 && (
-                <div className="tp-evidence-group group-bearish">
-                  <h4 className="tp-group-heading">Bearish Evidence</h4>
-                  <ul className="tp-list">
-                    {payload.bearish_evidence?.map((item, i) => (
-                      <li key={i}>{formatEvidenceItem(item, payload.indicators)}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {neutralCount > 0 && (
-                <div className="tp-evidence-group group-neutral">
-                  <h4 className="tp-group-heading">Neutral Observations</h4>
-                  <ul className="tp-list">
-                    {payload.neutral_observations?.map((item, i) => (
-                      <li key={i}>{formatEvidenceItem(item, payload.indicators)}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-
-            {/* Backend Decision Reasons */}
-            {payload.reasons?.length ? (
-              <div className="tp-reasons-group">
-                <h4 className="tp-group-heading">Decision Engine Evaluation Rules</h4>
-                <ul className="tp-list">
-                  {payload.reasons.map((r, i) => (
-                    <li key={i}>{r}</li>
-                  ))}
-                </ul>
-                {payload.required_confirmation && (
-                  <div className="tp-confirmation-box">
-                    <b>Confirmation Required:</b> {payload.required_confirmation}
-                  </div>
-                )}
-              </div>
-            ) : null}
-          </section>
-
-          {/* =====================================================================
-              7. DECISION ENGINE CONTRIBUTIONS
-              ===================================================================== */}
-          <section className="tp-card" aria-label="Section 7: Decision Engine Contributions">
-            <div className="tp-card-header">
-              <h3 className="tp-heading">Decision Engine Contributions</h3>
-              <span className="tp-pill-counter">Not ML feature importance</span>
-            </div>
-
-            <div className="tp-contrib-group">
-              <div className="tp-contrib-rows">
-                {components.length ? (
-                  components.map(([name, val]) => {
-                    const isPos = val >= 0;
-                    const pct = scale > 0 ? (Math.abs(val) / scale) * 100 : 0;
-                    return (
-                      <div className="tp-contrib-row" key={name}>
-                        <span className="tp-contrib-label">
-                          {componentLabels[name] || name.replaceAll('_', ' ')}
-                        </span>
-                        <div className="tp-contrib-track">
-                          <div
-                            className={`tp-contrib-fill ${isPos ? 'pos' : 'neg'}`}
-                            style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
-                          />
-                        </div>
-                        <span className={`tp-contrib-score ${isPos ? 'pos' : 'neg'}`}>
-                          {isPos ? '+' : ''}{val.toFixed(3)}
-                        </span>
-                      </div>
-                    );
-                  })
-                ) : (
-                  <span className="tp-muted-meta">Component contributions unavailable.</span>
-                )}
               </div>
             </div>
           </section>

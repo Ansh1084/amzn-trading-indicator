@@ -89,6 +89,8 @@ def analyze_candles(candles: pd.DataFrame, as_of: datetime | None=None, source="
     indicators=calculate_indicators(frame)
     latest=analyze_latest(indicators)
     latest_stamp=pd.Timestamp(frame.timestamp.iloc[-1]).isoformat()
+    decision_60m = None
+    stored_60m = None
     if len(frame)<MIN_WARMUP_BARS or latest.get("status")!="READY":
         decision={"classification":"WAIT FOR CONFIRMATION","directional_bias":"NEUTRAL","final_decision_score":0.0,
                   "technical_score":0.0,"reasons":[f"Insufficient completed history; {len(frame)} bars available, {MIN_WARMUP_BARS} required."],
@@ -96,6 +98,23 @@ def analyze_candles(candles: pd.DataFrame, as_of: datetime | None=None, source="
         structure={"status":"INSUFFICIENT_DATA","pivots":[],"support_zones":[],"resistance_zones":[],"nearest_support":None,"nearest_resistance":None}
         regime={"classification":"TRANSITIONAL","status":"INSUFFICIENT_DATA","evidence":[]}
         ml=ml_evidence or {"available":False,"reason":"Insufficient warm-up for decision."}
+        decision_60m = {
+            "intended_horizon_minutes": 60,
+            "intended_horizon_bars": 12,
+            "decision": "HOLD",
+            "directional_bias": "NEUTRAL",
+            "directional_score": 0.0,
+            "score_type": "heuristic_weighted_evidence_not_probability",
+            "gating_status": "INSUFFICIENT_WARMUP",
+            "reasons": [f"Indicator warm-up incomplete ({len(frame)}/{MIN_WARMUP_BARS} bars)."],
+            "invalidation_conditions": ["Minimum 60 completed bars required."],
+            "components": {},
+            "risk_plan": {"valid": False, "reason": "Indicator warm-up incomplete."},
+            "dedicated_60m_ml_model": {"status": "NOT_AVAILABLE"},
+            "ml_10m_supporting": {"available": False},
+            "evaluation_candle_timestamp": latest_stamp,
+            "decision_timestamp": datetime.now(timezone.utc).isoformat(),
+        }
     else:
         if persist:
             # Resolve prior setups against this completed, cutoff-bounded snapshot
@@ -128,6 +147,38 @@ def analyze_candles(candles: pd.DataFrame, as_of: datetime | None=None, source="
                 active_direction=direction
                 break
         decision=make_decision(indicators,structure,regime,ml,active_direction)
+        try:
+            from backend.app.services.analysis.decision_engine_60m import evaluate_60m_decision
+            from backend.app.services.analysis.market_intelligence import analyze_market_intelligence
+            from backend.app.services.analysis.persistence_60m import get_active_60m_signal, resolve_60m_signals
+            mtf_intel = analyze_market_intelligence(frame, as_of=as_of)
+            if persist:
+                resolve_60m_signals(frame, db_path=db_path)
+            active_60m = get_active_60m_signal(db_path) if persist else None
+            decision_60m = evaluate_60m_decision(
+                candles=frame,
+                indicators=indicators,
+                structure=structure,
+                regime=regime,
+                market_intelligence=mtf_intel,
+                ml_evidence=ml,
+                active_60m_signal=active_60m,
+                as_of=as_of,
+            )
+        except Exception as exc:
+            logger.warning("60m decision calculation failed: %s", exc)
+            decision_60m = {
+                "intended_horizon_minutes": 60, "intended_horizon_bars": 12,
+                "decision": "HOLD", "directional_bias": "NEUTRAL", "directional_score": 0.0,
+                "score_type": "heuristic_weighted_evidence_not_probability",
+                "gating_status": "ERROR", "reasons": [f"Engine evaluation error: {exc}"],
+                "invalidation_conditions": [], "components": {},
+                "risk_plan": {"valid": False, "reason": str(exc)},
+                "dedicated_60m_ml_model": {"status": "NOT_AVAILABLE"},
+                "ml_10m_supporting": {"available": False},
+                "evaluation_candle_timestamp": latest_stamp,
+                "decision_timestamp": datetime.now(timezone.utc).isoformat(),
+            }
     generated_at=as_of or datetime.now(timezone.utc)
     if generated_at.tzinfo is None: raise ValueError("analysis generation timestamp must be timezone-aware")
     generated=pd.Timestamp(generated_at).tz_convert("UTC").isoformat()
@@ -136,12 +187,18 @@ def analyze_candles(candles: pd.DataFrame, as_of: datetime | None=None, source="
       "candle_close_timestamp":(pd.Timestamp(frame.timestamp.iloc[-1])+pd.Timedelta(minutes=BAR_MINUTES)).isoformat(),
       "market_timezone":TIMEZONE,"bars_used":len(frame),"history_start":pd.Timestamp(frame.timestamp.iloc[0]).isoformat(),
       "data_gaps":frame.attrs.get("gaps",[]),"excluded_calendar_rows":frame.attrs.get("excluded_calendar_rows",0),"indicators":latest,"structure":structure,"market_regime":regime,
-      "ml_evidence":ml,"hypothetical_only":True,**decision}
+      "ml_evidence":ml,"decision_60m":decision_60m,"timing":decision_60m.get("timing") if decision_60m else None,"hypothetical_only":True,**decision}
     stored=save_signal(payload,db_path) if persist else None
+    if persist and decision_60m:
+        try:
+            from backend.app.services.analysis.persistence_60m import save_60m_decision
+            stored_60m = save_60m_decision(decision_60m, db_path=db_path)
+        except Exception as exc:
+            logger.warning("60m signal persistence failed: %s", exc)
     if persist and ml.get("available") and len(frame) > 0:
         try:
             from backend.app.services.analysis.ml_evaluation import save_ml_prediction
             save_ml_prediction(ml, float(frame.close.iloc[-1]), symbol=payload.get("symbol", "AMZN"), db_path=db_path)
         except Exception as exc:
             pass
-    return {"analysis":payload,"signal_record":stored}
+    return {"analysis":payload,"signal_record":stored,"signal_60m_record":stored_60m}

@@ -34,3 +34,84 @@ export function marketClockStatus(latest?: string | null) {
   if (clockOpen) return { label: 'RTH · WAITING FOR DATA', state: 'warning' as const };
   return { label: 'MARKET CLOSED', state: 'neutral' as const };
 }
+
+export function getPredictionSchedule(
+  candleTimestamp?: string | null,
+  marketClosed = false,
+  isStale = false,
+  backendTiming?: import('../types/analysis').PredictionTiming | null,
+) {
+  if (backendTiming) {
+    const isNowStale = Boolean(isStale || backendTiming.is_stale);
+    const isOpen = marketClosed ? false : backendTiming.is_market_open;
+    let headline = backendTiming.headline_display;
+    if (isNowStale) {
+      headline = 'WAITING FOR MARKET DATA';
+    } else if (marketClosed || !isOpen) {
+      headline = backendTiming.headline_display.includes('MARKET CLOSED')
+        ? backendTiming.headline_display
+        : 'MARKET CLOSED — Next prediction: Next trading session';
+    }
+    return {
+      ...backendTiming,
+      is_stale: isNowStale,
+      is_market_open: isOpen,
+      market_state: marketClosed ? ('CLOSED' as const) : backendTiming.market_state,
+      headline_display: headline,
+      last_analysis_completed_display: backendTiming.last_analysis_completed_display || backendTiming.last_prediction_display,
+    };
+  }
+  if (!candleTimestamp) {
+    return {
+      candle_timestamp: '',
+      candle_close_timestamp: '',
+      next_prediction_timestamp: '',
+      next_prediction_display: 'Next trading session',
+      last_prediction_display: '—',
+      last_candle_display: '—',
+      last_candle_close_display: '—',
+      last_analysis_completed_display: '—',
+      is_market_open: !marketClosed,
+      market_state: marketClosed ? ('CLOSED' as const) : ('OPEN' as const),
+      headline_display: isStale ? 'WAITING FOR MARKET DATA' : (marketClosed ? 'MARKET CLOSED — Next prediction: Next trading session' : 'NEXT PREDICTION: Scheduled on candle complete'),
+      is_stale: isStale,
+    };
+  }
+
+  const candleStart = new Date(candleTimestamp);
+  const candleClose = new Date(candleStart.getTime() + 5 * 60_000);
+  const nextPred = new Date(candleClose.getTime() + 5 * 60_000);
+
+  const timeFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+
+  const nextDisplay = `${timeFormatter.format(nextPred)} ET`;
+  const lastPredDisplay = `${timeFormatter.format(candleClose)} ET`;
+  const lastCandleDisplay = `${timeFormatter.format(candleStart)} ET`;
+
+  let headline = `NEXT PREDICTION: ${nextDisplay}`;
+  if (isStale) {
+    headline = 'WAITING FOR MARKET DATA';
+  } else if (marketClosed) {
+    headline = 'MARKET CLOSED — Next prediction: Next trading session';
+  }
+
+  return {
+    candle_timestamp: candleTimestamp,
+    candle_close_timestamp: candleClose.toISOString(),
+    next_prediction_timestamp: nextPred.toISOString(),
+    next_prediction_display: nextDisplay,
+    last_prediction_display: lastPredDisplay,
+    last_candle_display: lastCandleDisplay,
+    last_candle_close_display: lastPredDisplay,
+    last_analysis_completed_display: lastPredDisplay,
+    is_market_open: !marketClosed,
+    market_state: marketClosed ? ('CLOSED' as const) : ('OPEN' as const),
+    headline_display: headline,
+    is_stale: isStale,
+  };
+}

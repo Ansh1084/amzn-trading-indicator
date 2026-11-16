@@ -73,6 +73,13 @@ def previous_trading_day(day: date) -> date:
     return candidate
 
 
+def next_trading_day(day: date) -> date:
+    candidate = day + timedelta(days=1)
+    while not is_trading_day(candidate):
+        candidate += timedelta(days=1)
+    return candidate
+
+
 def session_close(day: date) -> time:
     # Standard scheduled 13:00 ET closes. The day before the observed
     # Independence Day closure is an early close (skip a weekend predecessor).

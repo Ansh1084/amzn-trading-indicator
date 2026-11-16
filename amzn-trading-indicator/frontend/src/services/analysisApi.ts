@@ -25,6 +25,15 @@ export const analysisApi = {
       '/analysis/ml-performance/resolve',
       { method: 'POST' }
     ),
+  latest60m: () =>
+    request<{ status: string; signal_id?: string; decision?: string; payload?: import('../types/analysis').Decision60mPayload }>('/analysis/60m/latest'),
+  signals60m: (offset = 0, limit = 50, status?: string) => {
+    const query = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    if (status) query.set('status', status);
+    return request<{ signals: import('../types/analysis').Decision60mRecord[]; limit: number; offset: number; horizon_minutes: number }>(`/analysis/60m/signals?${query}`);
+  },
+  performance60m: () =>
+    request<import('../types/analysis').Decision60mPerformance>('/analysis/60m/performance'),
 };
 
 export interface MarketIntelligence {

@@ -78,6 +78,9 @@ def _merge_overlapping_zones(zones: list[dict], atr: float, current_price: float
             merged_strength = max(prev["strength_score"], z["strength_score"])
             distance = (current_price - new_midpoint) if is_support else (new_midpoint - current_price)
 
+            invals = [ts for ts in [prev.get("invalidation_timestamp"), z.get("invalidation_timestamp")] if ts]
+            latest_inval = max(invals) if invals else None
+
             prev["lower"] = new_lower
             prev["upper"] = new_upper
             prev["midpoint"] = new_midpoint
@@ -92,6 +95,8 @@ def _merge_overlapping_zones(zones: list[dict], atr: float, current_price: float
             prev["id"] = f"zone-{prev['zone_type'].lower()}-{earliest_formation.replace(':', '').replace('-', '')[:15]}-{int(new_midpoint * 100)}"
             if status != "INVALIDATED":
                 prev["invalidation_timestamp"] = None
+            else:
+                prev["invalidation_timestamp"] = latest_inval
         else:
             merged.append(dict(z))
     return merged

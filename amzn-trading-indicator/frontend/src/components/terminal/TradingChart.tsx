@@ -43,16 +43,20 @@ class SupplyDemandPaneRenderer implements IPrimitivePaneRenderer {
   draw(target: CanvasRenderingTarget2D) {
     target.useMediaCoordinateSpace(({ context, mediaSize }) => {
       const timeScale = this._chart.timeScale();
+      const chartWidth = Math.max(0, Math.min(mediaSize.width, timeScale.width()));
 
       // Find the exact X-coordinate of the latest candle on screen.
       // A finite zone must terminate strictly at the latest candle and NEVER extend
-      // into the empty future/right-margin space of the chart.
+      // into the empty future/right-margin space or the price axis.
       let lastCandleX: number | null = null;
-      if (this._latestIndex !== null && this._latestIndex !== undefined && this._latestIndex >= 0) {
+      if (this._latestTime) {
+        const directCoord = timeScale.timeToCoordinate(this._latestTime);
+        if (directCoord !== null) lastCandleX = Number(directCoord);
+      }
+
+      if (lastCandleX === null && this._latestIndex !== null && this._latestIndex !== undefined && this._latestIndex >= 0) {
         const coord = timeScale.logicalToCoordinate(this._latestIndex as unknown as import('lightweight-charts').Logical);
-        if (coord !== null) {
-          lastCandleX = Number(coord);
-        }
+        if (coord !== null) lastCandleX = Number(coord);
       }
 
       if (lastCandleX === null && this._latestTime) {
@@ -63,15 +67,12 @@ class SupplyDemandPaneRenderer implements IPrimitivePaneRenderer {
         }
       }
 
-      if (lastCandleX === null && this._latestTime) {
-        const coord = timeScale.timeToCoordinate(this._latestTime);
-        if (coord !== null) lastCandleX = Number(coord);
-      }
-
-      // Default right edge: strictly bounded at the rightmost candle (+ 4px half-bar margin)
+      // Default right boundary for active zones:
+      // Strictly bounded at the latest candle (+ 3px for half-candle bar width)
+      // and clamped strictly within chartWidth so it never bleeds into the price axis.
       const defaultX2 = lastCandleX !== null
-        ? Math.max(0, Math.min(mediaSize.width, lastCandleX + 4))
-        : mediaSize.width;
+        ? Math.min(chartWidth, Math.max(0, lastCandleX + 3))
+        : chartWidth;
 
       for (const item of this._items) {
         // Y1, Y2: Map upper and lower zone prices to vertical coordinates
@@ -86,58 +87,81 @@ class SupplyDemandPaneRenderer implements IPrimitivePaneRenderer {
         const height = Math.max(Y2 - Y1, 3);
 
         // X1: Map formation timestamp to horizontal coordinate
-        let X1 = 0;
+        let X1: number | null = null;
         const visibleRange = timeScale.getVisibleRange();
         if (visibleRange && item.formationTime > 0 && item.formationTime > Number(visibleRange.to)) {
           // Formed in the future relative to the currently scrolled viewport
           continue;
         }
 
-        let coord: number | null = null;
         if (item.formationTime > 0) {
           const directCoord = timeScale.timeToCoordinate(item.formationTime);
           if (directCoord !== null) {
-            coord = Number(directCoord);
+            X1 = Number(directCoord);
           } else {
             const barIdx = timeScale.timeToIndex(item.formationTime, true);
             if (barIdx !== null) {
               const logicalCoord = timeScale.logicalToCoordinate(barIdx as unknown as import('lightweight-charts').Logical);
               if (logicalCoord !== null) {
-                coord = Number(logicalCoord);
+                X1 = Number(logicalCoord);
               }
             }
           }
         }
 
-        if (coord !== null) {
-          X1 = Math.max(0, coord);
-        } else {
-          // Formed in the past before visible range, extends from the left edge
-          X1 = 0;
+        // If formation candle is off-screen to the left (before visible range):
+        // NEVER default to X1 = 0! Setting X1 = 0 creates an infinite full-screen band.
+        // Instead: only display if the zone was tested or interacted with in the visible chart.
+        if (X1 === null) {
+          if (item.zone.latest_retest_timestamp) {
+            const retestTime = epoch(item.zone.latest_retest_timestamp);
+            const retestCoord = timeScale.timeToCoordinate(retestTime);
+            if (retestCoord !== null) {
+              X1 = Math.max(0, Number(retestCoord) - 60);
+            }
+          }
         }
+
+        // If formation candle is not visible and no recent retest exists on screen, skip.
+        if (X1 === null) continue;
+        if (X1 >= chartWidth) continue;
 
         // X2: Calculate finite right boundary
         let X2 = defaultX2;
-        if (item.status === 'INVALIDATED' && item.zone.invalidation_timestamp) {
-          const invalTime = epoch(item.zone.invalidation_timestamp);
-          let invalCoord: number | null = null;
-          const direct = timeScale.timeToCoordinate(invalTime);
-          if (direct !== null) {
-            invalCoord = Number(direct);
-          } else {
-            const barIdx = timeScale.timeToIndex(invalTime, true);
-            if (barIdx !== null) {
-              const logicalCoord = timeScale.logicalToCoordinate(barIdx as unknown as import('lightweight-charts').Logical);
-              if (logicalCoord !== null) invalCoord = Number(logicalCoord);
+
+        // 1. Invalidated / Mitigated zones: strictly terminate at invalidation candle
+        if (item.status === 'INVALIDATED' || item.zone.invalidation_timestamp) {
+          if (item.zone.invalidation_timestamp) {
+            const invalTime = epoch(item.zone.invalidation_timestamp);
+            let invalCoord: number | null = null;
+            const direct = timeScale.timeToCoordinate(invalTime);
+            if (direct !== null) {
+              invalCoord = Number(direct);
+            } else {
+              const barIdx = timeScale.timeToIndex(invalTime, true);
+              if (barIdx !== null) {
+                const logicalCoord = timeScale.logicalToCoordinate(barIdx as unknown as import('lightweight-charts').Logical);
+                if (logicalCoord !== null) invalCoord = Number(logicalCoord);
+              }
+            }
+            if (invalCoord !== null) {
+              X2 = Math.min(defaultX2, Math.max(X1, invalCoord));
             }
           }
-          if (invalCoord !== null) {
-            X2 = Math.max(X1, Math.min(defaultX2, invalCoord));
+        } else if (item.status === 'TESTED' && item.zone.latest_retest_timestamp) {
+          // 2. Tested zones: can terminate at latest retest + small continuation
+          const retestTime = epoch(item.zone.latest_retest_timestamp);
+          const retestCoord = timeScale.timeToCoordinate(retestTime);
+          if (retestCoord !== null) {
+            const extendedX = Math.min(defaultX2, Number(retestCoord) + 15);
+            X2 = Math.max(X1 + 10, extendedX);
           }
         }
 
+        // Strictly clamp X2 to not exceed chartWidth or latest candle
+        X2 = Math.min(chartWidth, Math.max(X1, X2));
         const width = X2 - X1;
-        if (width <= 0) continue;
+        if (width < 4) continue;
 
         const isInvalidated = item.status === 'INVALIDATED';
         const isSupply = item.isSupply;
@@ -146,10 +170,10 @@ class SupplyDemandPaneRenderer implements IPrimitivePaneRenderer {
         // Red translucent bands for selling-pressure areas (Supply)
         // Green translucent bands for buying-pressure areas (Demand)
         if (isSupply) {
-          context.fillStyle = isInvalidated ? 'rgba(242, 54, 69, 0.05)' : 'rgba(242, 54, 69, 0.14)';
+          context.fillStyle = isInvalidated ? 'rgba(242, 54, 69, 0.04)' : 'rgba(242, 54, 69, 0.12)';
           context.strokeStyle = isInvalidated ? 'rgba(242, 54, 69, 0.25)' : 'rgba(242, 54, 69, 0.50)';
         } else {
-          context.fillStyle = isInvalidated ? 'rgba(8, 153, 129, 0.05)' : 'rgba(8, 153, 129, 0.14)';
+          context.fillStyle = isInvalidated ? 'rgba(8, 153, 129, 0.04)' : 'rgba(8, 153, 129, 0.12)';
           context.strokeStyle = isInvalidated ? 'rgba(8, 153, 129, 0.25)' : 'rgba(8, 153, 129, 0.50)';
         }
 
@@ -162,6 +186,16 @@ class SupplyDemandPaneRenderer implements IPrimitivePaneRenderer {
         }
         context.strokeRect(X1, Y1, width, height);
         context.setLineDash([]);
+
+        // Subtle TradingView-style label inside the box
+        if (width >= 45 && height >= 14) {
+          context.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+          context.fillStyle = isSupply
+            ? (isInvalidated ? 'rgba(242, 54, 69, 0.50)' : 'rgba(242, 54, 69, 0.85)')
+            : (isInvalidated ? 'rgba(8, 153, 129, 0.50)' : 'rgba(8, 153, 129, 0.85)');
+          const labelText = isSupply ? 'Supply' : 'Demand';
+          context.fillText(labelText, X1 + 6, Y1 + Math.min(height - 3, 11));
+        }
       }
     });
   }
@@ -426,54 +460,68 @@ export function TradingChart({ candles, formingCandle, signals, payload, intelli
           const bottom = Math.max(yUpper !== null ? Number(yUpper) : 0, yLower !== null ? Number(yLower) : 560);
 
           const fTime = z.formation_timestamp ? epoch(z.formation_timestamp) : null;
-          let leftX = 0;
+          let leftX: number | null = null;
           if (fTime !== null && fTime > 0) {
             const visibleRange = timeScale.getVisibleRange();
             if (visibleRange && fTime > Number(visibleRange.to)) continue;
 
-            let cX: number | null = null;
             const directCoord = timeScale.timeToCoordinate(fTime);
             if (directCoord !== null) {
-              cX = Number(directCoord);
+              leftX = Number(directCoord);
             } else {
               const barIdx = timeScale.timeToIndex(fTime, true);
               if (barIdx !== null) {
                 const logicalCoord = timeScale.logicalToCoordinate(barIdx as unknown as import('lightweight-charts').Logical);
-                if (logicalCoord !== null) cX = Number(logicalCoord);
+                if (logicalCoord !== null) leftX = Number(logicalCoord);
               }
-            }
-            if (cX !== null) {
-              leftX = Math.max(0, cX);
-            } else {
-              leftX = 0;
             }
           }
 
+          if (leftX === null && z.latest_retest_timestamp) {
+            const retestCoord = timeScale.timeToCoordinate(epoch(z.latest_retest_timestamp));
+            if (retestCoord !== null) leftX = Math.max(0, Number(retestCoord) - 60);
+          }
+
+          if (leftX === null || leftX >= width) continue;
+
           let rightX = width;
           if (candlesRef.current.length > 0) {
-            const lastIdx = candlesRef.current.length - 1;
-            const coord = timeScale.logicalToCoordinate(lastIdx as unknown as import('lightweight-charts').Logical);
-            if (coord !== null) {
-              rightX = Math.min(width, Number(coord) + 4);
+            const lastCandle = candlesRef.current[candlesRef.current.length - 1];
+            const candleCoord = timeScale.timeToCoordinate(epoch(lastCandle.timestamp));
+            if (candleCoord !== null) {
+              rightX = Math.min(width, Number(candleCoord) + 3);
+            } else {
+              const lastIdx = candlesRef.current.length - 1;
+              const coord = timeScale.logicalToCoordinate(lastIdx as unknown as import('lightweight-charts').Logical);
+              if (coord !== null) rightX = Math.min(width, Number(coord) + 3);
             }
           }
-          if (z.status === 'INVALIDATED' && z.invalidation_timestamp) {
-            const invTime = epoch(z.invalidation_timestamp);
-            let invCoord: number | null = null;
-            const direct = timeScale.timeToCoordinate(invTime);
-            if (direct !== null) {
-              invCoord = Number(direct);
-            } else {
-              const bIdx = timeScale.timeToIndex(invTime, true);
-              if (bIdx !== null) {
-                const lCoord = timeScale.logicalToCoordinate(bIdx as unknown as import('lightweight-charts').Logical);
-                if (lCoord !== null) invCoord = Number(lCoord);
+          if (z.status === 'INVALIDATED' || z.invalidation_timestamp) {
+            if (z.invalidation_timestamp) {
+              const invTime = epoch(z.invalidation_timestamp);
+              let invCoord: number | null = null;
+              const direct = timeScale.timeToCoordinate(invTime);
+              if (direct !== null) {
+                invCoord = Number(direct);
+              } else {
+                const bIdx = timeScale.timeToIndex(invTime, true);
+                if (bIdx !== null) {
+                  const lCoord = timeScale.logicalToCoordinate(bIdx as unknown as import('lightweight-charts').Logical);
+                  if (lCoord !== null) invCoord = Number(lCoord);
+                }
+              }
+              if (invCoord !== null) {
+                rightX = Math.min(rightX, Math.max(leftX, invCoord));
               }
             }
-            if (invCoord !== null) {
-              rightX = Math.max(leftX, Math.min(rightX, invCoord));
+          } else if (z.status === 'TESTED' && z.latest_retest_timestamp) {
+            const retestCoord = timeScale.timeToCoordinate(epoch(z.latest_retest_timestamp));
+            if (retestCoord !== null) {
+              rightX = Math.min(rightX, Math.max(leftX + 10, Number(retestCoord) + 15));
             }
           }
+
+          rightX = Math.min(width, Math.max(leftX, rightX));
 
           if (mouseX >= leftX && mouseX <= rightX && mouseY >= top && mouseY <= bottom) {
             matched = z;

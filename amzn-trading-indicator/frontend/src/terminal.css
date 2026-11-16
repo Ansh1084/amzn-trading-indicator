@@ -2285,3 +2285,552 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* =========================================================================
+   60-MINUTE TRADING DECISION SYSTEM (COMPACT UNIFIED CARD)
+   ========================================================================= */
+.d60-card {
+  background: linear-gradient(180deg, #121622 0%, #0d1018 100%);
+  border: 1px solid #1e2638;
+  border-radius: 8px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+}
+
+.d60-header-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.d60-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.d60-card-kicker {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #38bdf8;
+}
+
+.d60-meta-pills {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.d60-meta-pill {
+  font-size: 10.5px;
+  color: #64748b;
+  background: #151a26;
+  border: 1px solid #1f2738;
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+
+.d60-meta-pill b {
+  color: #cbd5e1;
+  font-weight: 600;
+  font-family: var(--font-numeric, "JetBrains Mono", monospace);
+}
+
+/* ── PROMINENT NEXT PREDICTION BANNER ─────────────────────────────────── */
+.d60-next-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  letter-spacing: 0.03em;
+  transition: all 0.2s ease;
+}
+
+.banner-active {
+  background: rgba(14, 165, 233, 0.12);
+  border: 1px solid rgba(14, 165, 233, 0.35);
+  color: #e0f2fe;
+}
+
+.banner-active .d60-next-dot {
+  background: #38bdf8;
+  box-shadow: 0 0 10px #38bdf8;
+  animation: pulse-dot 2s infinite ease-in-out;
+}
+
+.banner-closed {
+  background: rgba(245, 158, 11, 0.10);
+  border: 1px solid rgba(245, 158, 11, 0.30);
+  color: #fef3c7;
+}
+
+.banner-closed .d60-next-dot {
+  background: #f59e0b;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
+}
+
+.banner-stale {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fee2e2;
+}
+
+.banner-stale .d60-next-dot {
+  background: #ef4444;
+  box-shadow: 0 0 10px #ef4444;
+  animation: pulse-dot 1s infinite ease-in-out;
+}
+
+.d60-next-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.d60-next-text {
+  font-weight: 800;
+  font-family: var(--font-numeric, "JetBrains Mono", monospace);
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.85); }
+}
+
+/* ── MAIN DECISION & SCORE ROW ────────────────────────────────────────── */
+.d60-decision-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 14px;
+  background: #0f131d;
+  border: 1px solid #1a2233;
+  border-radius: 6px;
+  flex-wrap: wrap;
+}
+
+.d60-badge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 18px;
+  border-radius: 6px;
+  border: 2px solid;
+  min-width: 90px;
+  text-align: center;
+}
+
+.d60-badge-lbl {
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+.d60-badge-val {
+  font-size: 20px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+}
+
+.d60-dec-buy {
+  background: rgba(16, 185, 129, 0.14);
+  border-color: #10b981;
+  color: #10b981;
+  box-shadow: inset 0 0 12px rgba(16, 185, 129, 0.2);
+}
+
+.d60-dec-sell {
+  background: rgba(244, 63, 94, 0.14);
+  border-color: #f43f5e;
+  color: #f43f5e;
+  box-shadow: inset 0 0 12px rgba(244, 63, 94, 0.2);
+}
+
+.d60-dec-wait {
+  background: rgba(245, 158, 11, 0.14);
+  border-color: #f59e0b;
+  color: #f59e0b;
+  box-shadow: inset 0 0 12px rgba(245, 158, 11, 0.2);
+}
+
+.d60-dec-hold {
+  background: rgba(100, 116, 139, 0.12);
+  border-color: #64748b;
+  color: #94a3b8;
+}
+
+.d60-decision-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1;
+}
+
+.d60-bias-line, .d60-score-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+}
+
+.d60-k {
+  color: #64748b;
+  font-weight: 600;
+}
+
+.d60-v {
+  font-weight: 700;
+  font-family: var(--font-numeric, "JetBrains Mono", monospace);
+}
+
+.bias-bullish { color: #10b981; }
+.bias-bearish { color: #f43f5e; }
+.bias-neutral { color: #94a3b8; }
+
+.score-pos { color: #10b981; }
+.score-neg { color: #f43f5e; }
+.score-warn { color: #f59e0b; }
+.score-neutral { color: #94a3b8; }
+
+.d60-score-tag {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: #475569;
+  letter-spacing: 0.04em;
+  background: #141926;
+  border: 1px solid #1c2436;
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.d60-active-status {
+  font-size: 10px;
+  color: #38bdf8;
+  font-weight: 600;
+}
+
+/* ── COMPACT EVIDENCE ROW (4 TILES) ──────────────────────────────────── */
+.d60-indicators-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.d60-ind-tile {
+  background: #0e121b;
+  border: 1px solid #182030;
+  border-radius: 5px;
+  padding: 7px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.d60-ind-k {
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+}
+
+.d60-ind-v-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.d60-ind-icon {
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.d60-ind-v {
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.ind-pos { border-color: rgba(16, 185, 129, 0.35); }
+.ind-pos .d60-ind-icon, .ind-pos .d60-ind-v { color: #10b981; }
+
+.ind-neg { border-color: rgba(244, 63, 94, 0.35); }
+.ind-neg .d60-ind-icon, .ind-neg .d60-ind-v { color: #f43f5e; }
+
+.ind-warn { border-color: rgba(245, 158, 11, 0.35); }
+.ind-warn .d60-ind-icon, .ind-warn .d60-ind-v { color: #f59e0b; }
+
+.ind-neutral { border-color: #1e2638; }
+.ind-neutral .d60-ind-icon, .ind-neutral .d60-ind-v { color: #94a3b8; }
+
+/* ── TRADE PLAN / NO SETUP STRIP ─────────────────────────────────────── */
+.d60-trade-plan {
+  background: #0d111a;
+  border: 1px solid #1a2233;
+  border-radius: 6px;
+  padding: 9px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.d60-plan-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  font-weight: 800;
+  color: #94a3b8;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.d60-plan-pill {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.pill-pos {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.d60-plan-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+}
+
+.d60-plan-box {
+  background: #121724;
+  border: 1px solid #1c2438;
+  border-radius: 4px;
+  padding: 5px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.box-k {
+  font-size: 8.5px;
+  color: #64748b;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.box-v {
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--font-numeric, "JetBrains Mono", monospace);
+  color: #f1f5f9;
+}
+
+.tone-pos { color: #10b981; }
+.tone-neg { color: #f43f5e; }
+
+.d60-no-setup-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #0d111a;
+  border: 1px solid #171d2b;
+  border-radius: 5px;
+  padding: 7px 10px;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.no-setup-icon {
+  color: #38bdf8;
+  font-size: 12px;
+}
+
+.no-setup-text {
+  color: #7b8ba5;
+  line-height: 1.3;
+}
+
+/* ── ONE-LINE EXPLANATION ────────────────────────────────────────────── */
+.d60-explanation-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  background: #0a0d14;
+  border-left: 2px solid #38bdf8;
+  padding: 5px 10px;
+  border-radius: 0 4px 4px 0;
+}
+
+.exp-label {
+  font-weight: 700;
+  color: #38bdf8;
+  font-size: 10px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.exp-text {
+  color: #94a3b8;
+}
+
+/* ── SUPPORTING 10M ML STRIP ─────────────────────────────────────────── */
+.d60-ml10-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10.5px;
+  background: #090c13;
+  border: 1px solid #141b29;
+  border-radius: 4px;
+  padding: 5px 10px;
+  flex-wrap: wrap;
+}
+
+.ml10-chip-tag {
+  color: #38bdf8;
+  font-weight: 700;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ml10-chip-data {
+  color: #cbd5e1;
+  font-family: var(--font-numeric, "JetBrains Mono", monospace);
+}
+
+.ml10-chip-data b {
+  color: #f1f5f9;
+}
+
+.ml10-muted {
+  color: #64748b;
+  font-family: inherit;
+}
+
+@media (max-width: 900px) {
+  .d60-indicators-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .d60-plan-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* ── 60-Minute Trading Decision Additional Position & Pill Styles ─────────── */
+.d60-pos-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  flex-wrap: wrap;
+}
+
+.d60-active-pos-block {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.d60-pos-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.d60-pos-badge.pos-buy {
+  background: rgba(16, 185, 129, 0.16);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+.d60-pos-badge.pos-sell {
+  background: rgba(244, 63, 94, 0.16);
+  color: #f43f5e;
+  border: 1px solid rgba(244, 63, 94, 0.4);
+}
+
+.d60-pos-meta {
+  font-size: 11px;
+  color: #94a3b8;
+  font-family: var(--font-numeric, "JetBrains Mono", monospace);
+}
+
+.d60-no-pos-text {
+  font-size: 11px;
+  color: #64748b;
+  font-style: italic;
+}
+
+.pos-pnl {
+  font-weight: 700;
+}
+
+.pos-pnl-gain {
+  color: #10b981;
+}
+
+.pos-pnl-loss {
+  color: #f43f5e;
+}
+
+.d60-score-sep {
+  color: #334155;
+  margin: 0 4px;
+}
+
+.pill-neg {
+  background: rgba(244, 63, 94, 0.15);
+  color: #f43f5e;
+  border: 1px solid rgba(244, 63, 94, 0.3);
+}
+
+.pill-warn {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.d60-existing-signal-plan {
+  border-left: 3px solid #f59e0b;
+}
+
+.d60-existing-signal-title {
+  color: #f59e0b;
+  font-weight: 800;
+}
+
+.d60-existing-notice {
+  font-size: 10px;
+  color: #94a3b8;
+  line-height: 1.35;
+  background: rgba(245, 158, 11, 0.06);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  border-radius: 4px;
+  padding: 4px 8px;
+}

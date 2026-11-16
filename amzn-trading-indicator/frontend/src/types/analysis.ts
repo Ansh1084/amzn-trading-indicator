@@ -45,6 +45,125 @@ export interface RiskPlan {
   target_method?: string;
 }
 
+export interface Decision60mComponent {
+  score: number | null;
+  weight: number;
+  weighted_contribution: number;
+  summary: string;
+  evidence: string[];
+  meta: Record<string, unknown>;
+}
+
+export interface PredictionTiming {
+  candle_timestamp: string;
+  candle_close_timestamp: string;
+  next_prediction_timestamp: string;
+  next_prediction_display: string;
+  last_prediction_display: string;
+  last_candle_display: string;
+  last_candle_close_display?: string;
+  last_analysis_completed_display?: string;
+  is_market_open: boolean;
+  market_state: 'OPEN' | 'CLOSED' | 'PRE_MARKET';
+  headline_display: string;
+  is_stale: boolean;
+}
+
+export interface Active60mSignal {
+  signal_id?: string;
+  direction: 'BUY' | 'SELL';
+  status: string;
+  trigger_price: number;
+  entry_zone?: { lower: number; upper: number };
+  stop_loss: number;
+  target_1: number;
+  target_2: number;
+  risk_reward_ratio?: number;
+  candle_timestamp: string;
+  is_existing_position: boolean;
+  valid?: boolean;
+  validation_error?: string | null;
+  unrealized_pnl_pct?: number | null;
+}
+
+export interface Decision60mPayload {
+  intended_horizon_minutes: number;
+  intended_horizon_bars: number;
+  decision: 'BUY' | 'SELL' | 'HOLD' | 'WAIT FOR CONFIRMATION';
+  directional_bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  directional_score: number;
+  score_type: string;
+  gating_status: string;
+  reasons: string[];
+  invalidation_conditions: string[];
+  timing?: PredictionTiming;
+  components: {
+    trend?: Decision60mComponent;
+    structure?: Decision60mComponent;
+    momentum?: Decision60mComponent;
+    volume?: Decision60mComponent;
+    vwap_price_action?: Decision60mComponent;
+  };
+  risk_plan?: RiskPlan;
+  active_signal?: Active60mSignal | null;
+  dedicated_60m_ml_model?: {
+    status: string;
+    message?: string;
+  };
+  ml_10m_supporting?: {
+    model_name?: string;
+    model_version?: string;
+    prediction_horizon_minutes?: number;
+    available?: boolean;
+    direction?: string | null;
+    raw_probability_up?: number | null;
+    raw_directional_score?: number | null;
+    score_type?: string;
+    role?: string;
+  };
+  evaluation_candle_timestamp?: string;
+  decision_timestamp?: string;
+  market_timezone?: string;
+}
+
+export interface Decision60mRecord {
+  signal_id: string;
+  candle_timestamp: string;
+  generated_at: string;
+  analysis_version: string;
+  decision: 'BUY' | 'SELL' | 'HOLD' | 'WAIT FOR CONFIRMATION';
+  directional_bias: string;
+  directional_score: number;
+  horizon_minutes: number;
+  horizon_bars: number;
+  trigger_price: number;
+  entry_zone_lower?: number;
+  entry_zone_upper?: number;
+  stop_loss?: number;
+  target_1?: number;
+  target_2?: number;
+  risk_reward_ratio?: number;
+  payload: Decision60mPayload;
+  status: string;
+  outcome?: Record<string, unknown> | null;
+  gross_return_pct?: number | null;
+  net_return_pct?: number | null;
+  resolved_at?: string | null;
+}
+
+export interface Decision60mPerformance {
+  has_data: boolean;
+  total_decisions: number;
+  counts: { buy: number; sell: number; hold: number; wait: number };
+  resolved_count: number;
+  win_rate: number | null;
+  average_net_return_pct: number | null;
+  gross_pnl_pct: number | null;
+  net_pnl_pct: number | null;
+  profit_factor: number | null;
+  cost_assumption_bps?: number;
+}
+
 export interface AnalysisPayload {
   analysis_version: string;
   symbol: string;
@@ -85,6 +204,8 @@ export interface AnalysisPayload {
     candle_timestamp?: string;
     reason?: string;
   };
+  decision_60m?: Decision60mPayload;
+  timing?: PredictionTiming;
   hypothetical_only?: boolean;
   classification: string;
   directional_bias?: string;

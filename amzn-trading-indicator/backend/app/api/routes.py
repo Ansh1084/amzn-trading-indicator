@@ -237,6 +237,48 @@ def resolve_ml_performance():
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@router.get("/analysis/60m/latest")
+def latest_60m_decision():
+    """Return the most recent 60-minute trading decision."""
+    from backend.app.services.analysis.persistence_60m import get_latest_60m_decision
+    item = get_latest_60m_decision()
+    if item is None:
+        try:
+            from backend.app.services.analysis.service import analyze_candles
+            local_df = _analysis_local_candles()
+            analyze_candles(local_df, source="local", persist=True)
+            item = get_latest_60m_decision()
+        except Exception as exc:
+            logger.warning("Could not auto-generate initial 60m decision: %s", exc)
+
+    if item is None:
+        return {"status": "empty", "detail": "No 60-minute decision stored yet.", "decision": None}
+    return {"status": "ok", **item}
+
+
+@router.get("/analysis/60m/signals")
+def list_60m_decision_signals(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    status: str | None = None,
+):
+    """Return paginated list of 60-minute trading decisions."""
+    from backend.app.services.analysis.persistence_60m import list_60m_signals
+    return {
+        "signals": list_60m_signals(limit=limit, offset=offset, status=status),
+        "limit": limit,
+        "offset": offset,
+        "horizon_minutes": 60,
+    }
+
+
+@router.get("/analysis/60m/performance")
+def get_60m_decision_performance():
+    """Return evaluation metrics for resolved 60-minute trading decisions."""
+    from backend.app.services.analysis.persistence_60m import get_60m_performance_summary
+    return get_60m_performance_summary()
+
+
 class IssueRequest(BaseModel):
     evaluation_date: date
     window_id: str
