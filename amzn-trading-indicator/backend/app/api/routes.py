@@ -38,6 +38,11 @@ from backend.app.services.analysis.service import analyze_candles
 from backend.app.services import market_store
 from backend.app.services.analysis.outcomes import resolve_signals
 from backend.app.services.analysis.persistence import get_signal, list_signals, signal_events, active_signals, latest_signal
+from backend.app.services.analysis.ml_evaluation import (
+    calculate_ml_performance,
+    resolve_ml_predictions,
+    sync_existing_signals_to_ml_predictions,
+)
 from backend.app.services.analysis.market_intelligence import analyze_market_intelligence
 from backend.app.services import paper_trading
 from fastapi.responses import StreamingResponse, Response
@@ -95,7 +100,10 @@ def run_analysis(source: str = "local"):
     if source != "local":
         raise HTTPException(status_code=422, detail="Analysis currently accepts source='local'; no live request was made")
     try:
-        result = analyze_candles(_analysis_local_candles(), source="local")
+        local_df = _analysis_local_candles()
+        latest_candle_time = pd.to_datetime(local_df.timestamp.iloc[-1], utc=True)
+        as_of_time = (latest_candle_time + pd.Timedelta(minutes=5)).to_pydatetime()
+        result = analyze_candles(local_df, as_of=as_of_time, source="local")
         queued_trade = paper_trading.on_actionable_signal(result.get("signal_record"))
         return {"status": "ok", **result, "paper_trade": queued_trade}
     except (ValueError, FileNotFoundError) as exc:
@@ -197,6 +205,35 @@ def resolve_analysis_outcomes(source: str = "local"):
     try:
         return resolve_signals(_analysis_local_candles())
     except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/analysis/ml-performance")
+def get_ml_performance(
+    window: str = Query("50", pattern="^(50|100|500|all)$"),
+    resolve: bool = Query(True),
+):
+    """Live out-of-sample LightGBM performance metrics on genuine market outcomes."""
+    if resolve:
+        try:
+            sync_existing_signals_to_ml_predictions()
+            resolve_ml_predictions(candles=_analysis_local_candles())
+        except Exception as exc:
+            logger.debug("Automatic ML outcome resolution skipped: %s", exc)
+    try:
+        return calculate_ml_performance(window=window)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/analysis/ml-performance/resolve")
+def resolve_ml_performance():
+    """Trigger resolution of pending out-of-sample ML predictions."""
+    try:
+        sync_existing_signals_to_ml_predictions()
+        res = resolve_ml_predictions(candles=_analysis_local_candles())
+        return {"status": "ok", **res}
+    except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 

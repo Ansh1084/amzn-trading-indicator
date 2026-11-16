@@ -9,8 +9,20 @@ from src.forecasts.store import connect
 def save_signal(payload: dict, db_path: str | Path | None = None) -> dict:
     stamp = datetime.now(timezone.utc).isoformat()
     with connect(db_path) as db:
-        db.execute("INSERT OR IGNORE INTO analysis_signals(signal_id,candle_timestamp,generated_at,analysis_version,classification,directional_bias,final_score,payload,status) VALUES(?,?,?,?,?,?,?,?,?)",
-                   (str(uuid4()), payload["candle_timestamp"], payload["generated_at"], payload["analysis_version"], payload["classification"], payload["directional_bias"], payload.get("final_decision_score"), json.dumps(payload, default=str), "ACTIVE" if payload["classification"] in {"BUY","SELL"} else "NOT_ACTIONABLE"))
+        existing = db.execute("SELECT signal_id FROM analysis_signals WHERE candle_timestamp=? AND analysis_version=?",
+                              (payload["candle_timestamp"], payload["analysis_version"])).fetchone()
+        sig_id = existing[0] if existing else str(uuid4())
+        status = "ACTIVE" if payload["classification"] in {"BUY","SELL"} else "NOT_ACTIONABLE"
+        db.execute("""INSERT INTO analysis_signals(signal_id,candle_timestamp,generated_at,analysis_version,classification,directional_bias,final_score,payload,status)
+                      VALUES(?,?,?,?,?,?,?,?,?)
+                      ON CONFLICT(candle_timestamp,analysis_version) DO UPDATE SET
+                        generated_at=excluded.generated_at,
+                        classification=excluded.classification,
+                        directional_bias=excluded.directional_bias,
+                        final_score=excluded.final_score,
+                        payload=excluded.payload,
+                        status=excluded.status""",
+                   (sig_id, payload["candle_timestamp"], payload["generated_at"], payload["analysis_version"], payload["classification"], payload["directional_bias"], payload.get("final_decision_score"), json.dumps(payload, default=str), status))
         row = db.execute("SELECT * FROM analysis_signals WHERE candle_timestamp=? AND analysis_version=?", (payload["candle_timestamp"], payload["analysis_version"])).fetchone()
         return _decode(row)
 
@@ -42,7 +54,11 @@ def active_signals(db_path=None):
     with connect(db_path) as db: return [_decode(r) for r in db.execute("SELECT * FROM analysis_signals WHERE status IN ('ACTIVE','TARGET_1_HIT') ORDER BY candle_timestamp").fetchall()]
 
 def latest_signal(db_path=None):
-    with connect(db_path) as db: return _decode(db.execute("SELECT * FROM analysis_signals ORDER BY generated_at DESC LIMIT 1").fetchone())
+    with connect(db_path) as db:
+        row = db.execute("SELECT * FROM analysis_signals WHERE json_extract(payload, '$.structure.status') = 'READY' ORDER BY candle_timestamp DESC, generated_at DESC LIMIT 1").fetchone()
+        if not row:
+            row = db.execute("SELECT * FROM analysis_signals ORDER BY candle_timestamp DESC, generated_at DESC LIMIT 1").fetchone()
+        return _decode(row)
 
 def append_event(signal_id: str, kind: str, details: dict, db_path=None):
     with connect(db_path) as db:

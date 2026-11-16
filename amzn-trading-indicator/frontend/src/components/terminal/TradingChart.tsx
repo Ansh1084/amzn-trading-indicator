@@ -2,10 +2,243 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CandlestickSeries, ColorType, createChart, createSeriesMarkers, HistogramSeries, LineSeries, LineStyle,
   type IChartApi, type IPriceLine, type ISeriesApi, type SeriesMarker, type Time, type UTCTimestamp,
+  type ISeriesPrimitive, type SeriesAttachedParameter, type IPrimitivePaneRenderer, type IPrimitivePaneView,
+  type IChartApiBase,
 } from 'lightweight-charts';
-import type { AnalysisPayload, MarketCandle, SignalRecord } from '../../types/analysis';
+import type { CanvasRenderingTarget2D } from 'fancy-canvas';
+import type { AnalysisPayload, MarketCandle, SignalRecord, Zone } from '../../types/analysis';
 import type { MarketIntelligence } from '../../services/analysisApi';
 import { formatTime, price } from '../../utils/format';
+
+interface ZoneDrawingItem {
+  zone: Zone;
+  isSupply: boolean;
+  formationTime: UTCTimestamp;
+  upper: number;
+  lower: number;
+  status: string;
+}
+
+class SupplyDemandPaneRenderer implements IPrimitivePaneRenderer {
+  private _items: ZoneDrawingItem[];
+  private _latestTime: UTCTimestamp | null;
+  private _latestIndex: number | null;
+  private _series: ISeriesApi<'Candlestick', Time>;
+  private _chart: IChartApiBase<Time>;
+
+  constructor(
+    items: ZoneDrawingItem[],
+    latestTime: UTCTimestamp | null,
+    latestIndex: number | null,
+    series: ISeriesApi<'Candlestick', Time>,
+    chart: IChartApiBase<Time>,
+  ) {
+    this._items = items;
+    this._latestTime = latestTime;
+    this._latestIndex = latestIndex;
+    this._series = series;
+    this._chart = chart;
+  }
+
+  draw(target: CanvasRenderingTarget2D) {
+    target.useMediaCoordinateSpace(({ context, mediaSize }) => {
+      const timeScale = this._chart.timeScale();
+
+      // Find the exact X-coordinate of the latest candle on screen.
+      // A finite zone must terminate strictly at the latest candle and NEVER extend
+      // into the empty future/right-margin space of the chart.
+      let lastCandleX: number | null = null;
+      if (this._latestIndex !== null && this._latestIndex !== undefined && this._latestIndex >= 0) {
+        const coord = timeScale.logicalToCoordinate(this._latestIndex as unknown as import('lightweight-charts').Logical);
+        if (coord !== null) {
+          lastCandleX = Number(coord);
+        }
+      }
+
+      if (lastCandleX === null && this._latestTime) {
+        const barIdx = timeScale.timeToIndex(this._latestTime, true);
+        if (barIdx !== null) {
+          const coord = timeScale.logicalToCoordinate(barIdx as unknown as import('lightweight-charts').Logical);
+          if (coord !== null) lastCandleX = Number(coord);
+        }
+      }
+
+      if (lastCandleX === null && this._latestTime) {
+        const coord = timeScale.timeToCoordinate(this._latestTime);
+        if (coord !== null) lastCandleX = Number(coord);
+      }
+
+      // Default right edge: strictly bounded at the rightmost candle (+ 4px half-bar margin)
+      const defaultX2 = lastCandleX !== null
+        ? Math.max(0, Math.min(mediaSize.width, lastCandleX + 4))
+        : mediaSize.width;
+
+      for (const item of this._items) {
+        // Y1, Y2: Map upper and lower zone prices to vertical coordinates
+        const yUpper = this._series.priceToCoordinate(item.upper);
+        const yLower = this._series.priceToCoordinate(item.lower);
+        if (yUpper === null && yLower === null) continue;
+        const topY = yUpper !== null ? Number(yUpper) : 0;
+        const bottomY = yLower !== null ? Number(yLower) : mediaSize.height;
+
+        const Y1 = Math.min(topY, bottomY);
+        const Y2 = Math.max(topY, bottomY);
+        const height = Math.max(Y2 - Y1, 3);
+
+        // X1: Map formation timestamp to horizontal coordinate
+        let X1 = 0;
+        const visibleRange = timeScale.getVisibleRange();
+        if (visibleRange && item.formationTime > 0 && item.formationTime > Number(visibleRange.to)) {
+          // Formed in the future relative to the currently scrolled viewport
+          continue;
+        }
+
+        let coord: number | null = null;
+        if (item.formationTime > 0) {
+          const directCoord = timeScale.timeToCoordinate(item.formationTime);
+          if (directCoord !== null) {
+            coord = Number(directCoord);
+          } else {
+            const barIdx = timeScale.timeToIndex(item.formationTime, true);
+            if (barIdx !== null) {
+              const logicalCoord = timeScale.logicalToCoordinate(barIdx as unknown as import('lightweight-charts').Logical);
+              if (logicalCoord !== null) {
+                coord = Number(logicalCoord);
+              }
+            }
+          }
+        }
+
+        if (coord !== null) {
+          X1 = Math.max(0, coord);
+        } else {
+          // Formed in the past before visible range, extends from the left edge
+          X1 = 0;
+        }
+
+        // X2: Calculate finite right boundary
+        let X2 = defaultX2;
+        if (item.status === 'INVALIDATED' && item.zone.invalidation_timestamp) {
+          const invalTime = epoch(item.zone.invalidation_timestamp);
+          let invalCoord: number | null = null;
+          const direct = timeScale.timeToCoordinate(invalTime);
+          if (direct !== null) {
+            invalCoord = Number(direct);
+          } else {
+            const barIdx = timeScale.timeToIndex(invalTime, true);
+            if (barIdx !== null) {
+              const logicalCoord = timeScale.logicalToCoordinate(barIdx as unknown as import('lightweight-charts').Logical);
+              if (logicalCoord !== null) invalCoord = Number(logicalCoord);
+            }
+          }
+          if (invalCoord !== null) {
+            X2 = Math.max(X1, Math.min(defaultX2, invalCoord));
+          }
+        }
+
+        const width = X2 - X1;
+        if (width <= 0) continue;
+
+        const isInvalidated = item.status === 'INVALIDATED';
+        const isSupply = item.isSupply;
+
+        // Visual design strictly matching reference:
+        // Red translucent bands for selling-pressure areas (Supply)
+        // Green translucent bands for buying-pressure areas (Demand)
+        if (isSupply) {
+          context.fillStyle = isInvalidated ? 'rgba(242, 54, 69, 0.05)' : 'rgba(242, 54, 69, 0.14)';
+          context.strokeStyle = isInvalidated ? 'rgba(242, 54, 69, 0.25)' : 'rgba(242, 54, 69, 0.50)';
+        } else {
+          context.fillStyle = isInvalidated ? 'rgba(8, 153, 129, 0.05)' : 'rgba(8, 153, 129, 0.14)';
+          context.strokeStyle = isInvalidated ? 'rgba(8, 153, 129, 0.25)' : 'rgba(8, 153, 129, 0.50)';
+        }
+
+        context.fillRect(X1, Y1, width, height);
+        context.lineWidth = 1;
+        if (isInvalidated) {
+          context.setLineDash([4, 4]);
+        } else {
+          context.setLineDash([]);
+        }
+        context.strokeRect(X1, Y1, width, height);
+        context.setLineDash([]);
+      }
+    });
+  }
+}
+
+class SupplyDemandPaneView implements IPrimitivePaneView {
+  private _source: SupplyDemandZonesPrimitive;
+
+  constructor(source: SupplyDemandZonesPrimitive) {
+    this._source = source;
+  }
+
+  zOrder(): 'bottom' {
+    return 'bottom';
+  }
+
+  renderer(): IPrimitivePaneRenderer | null {
+    if (!this._source.series || !this._source.chart) return null;
+    return new SupplyDemandPaneRenderer(
+      this._source.items,
+      this._source.latestTime,
+      this._source.latestIndex,
+      this._source.series,
+      this._source.chart,
+    );
+  }
+}
+
+class SupplyDemandZonesPrimitive implements ISeriesPrimitive<Time> {
+  chart: IChartApiBase<Time> | null = null;
+  series: ISeriesApi<'Candlestick', Time> | null = null;
+  items: ZoneDrawingItem[] = [];
+  latestTime: UTCTimestamp | null = null;
+  latestIndex: number | null = null;
+  private _requestUpdate?: () => void;
+  private _paneViews: SupplyDemandPaneView[];
+
+  constructor() {
+    this._paneViews = [new SupplyDemandPaneView(this)];
+  }
+
+  attached(param: SeriesAttachedParameter<Time, 'Candlestick'>) {
+    this.chart = param.chart;
+    this.series = param.series;
+    this._requestUpdate = param.requestUpdate;
+  }
+
+  detached() {
+    this.chart = null;
+    this.series = null;
+    this._requestUpdate = undefined;
+  }
+
+  update(zones: Zone[], latestTime: UTCTimestamp | null, latestIndex: number | null = null) {
+    this.latestTime = latestTime;
+    this.latestIndex = latestIndex;
+    // Render active and tested zones only to maintain a clean, limited, finite terminal chart
+    const activeZones = zones.filter((z) => z.status !== 'INVALIDATED');
+    const displayZones = activeZones.length > 0 ? activeZones : zones;
+    this.items = displayZones.map((z) => {
+      const isSupply = z.zone_type === 'SUPPLY' || z.type === 'RESISTANCE';
+      return {
+        zone: z,
+        isSupply,
+        formationTime: z.formation_timestamp ? epoch(z.formation_timestamp) : (0 as UTCTimestamp),
+        upper: z.upper,
+        lower: z.lower,
+        status: z.status ?? 'ACTIVE',
+      };
+    });
+    this._requestUpdate?.();
+  }
+
+  paneViews() {
+    return this._paneViews;
+  }
+}
 
 type OverlayKey = 'ema9' | 'ema20' | 'ema50' | 'sma20' | 'sma50' | 'vwap' | 'bollinger';
 type OverlayState = Record<OverlayKey, boolean>;
@@ -95,15 +328,19 @@ export function TradingChart({ candles, formingCandle, signals, payload, intelli
   const candleSeries = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volumeSeries = useRef<ISeriesApi<'Histogram'> | null>(null);
   const markerPlugin = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
+  const zonesPlugin = useRef<SupplyDemandZonesPrimitive | null>(null);
   const overlaySeries = useRef(new Map<string, ChartSeries>());
   const priceLines = useRef<IPriceLine[]>([]);
   const rangeSignature = useRef('');
   const candlesRef = useRef(candles);
   const plottedCandlesRef = useRef<MarketCandle[]>([]);
+  const zonesRef = useRef<Zone[]>([]);
+  const showZonesRef = useRef(true);
   const signalsByTime = useMemo(() => new Map(signals.map((record) => [epoch(record.candle_timestamp), record])), [signals]);
   const signalsRef = useRef(signalsByTime);
   const onVisibleRightCandleRef = useRef(onVisibleRightCandle);
   const [hover, setHover] = useState<Hover>(null);
+  const [hoveredZone, setHoveredZone] = useState<Zone | null>(null);
   const [overlays, setOverlays] = useState<OverlayState>({ ema9: true, ema20: true, ema50: false, sma20: false, sma50: false, vwap: true, bollinger: false });
   const [showVolume, setShowVolume] = useState(true);
   const [showZones, setShowZones] = useState(true);
@@ -114,6 +351,7 @@ export function TradingChart({ candles, formingCandle, signals, payload, intelli
   const [showPreviousClose, setShowPreviousClose] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   candlesRef.current = candles;
+  showZonesRef.current = showZones;
   signalsRef.current = signalsByTime;
   onVisibleRightCandleRef.current = onVisibleRightCandle;
 
@@ -149,17 +387,103 @@ export function TradingChart({ candles, formingCandle, signals, payload, intelli
         }));
       }
     }
+    const zonesPrimitive = new SupplyDemandZonesPrimitive();
+    candlesApi.attachPrimitive(zonesPrimitive);
+    zonesPlugin.current = zonesPrimitive;
+
     chart.current = instance;
     candleSeries.current = candlesApi;
     volumeSeries.current = volumeApi;
     markerPlugin.current = createSeriesMarkers(candlesApi, []);
     overlaySeries.current = lines;
     instance.subscribeCrosshairMove((param) => {
-      if (!param.point || param.time === undefined || param.time === null) { setHover(null); return; }
+      if (!param.point || param.time === undefined || param.time === null) {
+        setHover(null);
+        setHoveredZone(null);
+        return;
+      }
       const time = Number(param.time) as UTCTimestamp;
       const candle = candlesRef.current.find((item) => epoch(item.timestamp) === time);
-      if (!candle) { setHover(null); return; }
+      if (!candle) {
+        setHover(null);
+        setHoveredZone(null);
+        return;
+      }
       setHover({ x: param.point.x, y: param.point.y, candle, signal: signalsRef.current.get(time) });
+
+      if (showZonesRef.current && zonesRef.current.length > 0 && candleSeries.current && chart.current) {
+        const mouseX = param.point.x;
+        const mouseY = param.point.y;
+        const timeScale = chart.current.timeScale();
+        const width = timeScale.width();
+
+        let matched: Zone | null = null;
+        for (const z of zonesRef.current) {
+          const yUpper = candleSeries.current.priceToCoordinate(z.upper);
+          const yLower = candleSeries.current.priceToCoordinate(z.lower);
+          if (yUpper === null && yLower === null) continue;
+          const top = Math.min(yUpper !== null ? Number(yUpper) : 0, yLower !== null ? Number(yLower) : 560);
+          const bottom = Math.max(yUpper !== null ? Number(yUpper) : 0, yLower !== null ? Number(yLower) : 560);
+
+          const fTime = z.formation_timestamp ? epoch(z.formation_timestamp) : null;
+          let leftX = 0;
+          if (fTime !== null && fTime > 0) {
+            const visibleRange = timeScale.getVisibleRange();
+            if (visibleRange && fTime > Number(visibleRange.to)) continue;
+
+            let cX: number | null = null;
+            const directCoord = timeScale.timeToCoordinate(fTime);
+            if (directCoord !== null) {
+              cX = Number(directCoord);
+            } else {
+              const barIdx = timeScale.timeToIndex(fTime, true);
+              if (barIdx !== null) {
+                const logicalCoord = timeScale.logicalToCoordinate(barIdx as unknown as import('lightweight-charts').Logical);
+                if (logicalCoord !== null) cX = Number(logicalCoord);
+              }
+            }
+            if (cX !== null) {
+              leftX = Math.max(0, cX);
+            } else {
+              leftX = 0;
+            }
+          }
+
+          let rightX = width;
+          if (candlesRef.current.length > 0) {
+            const lastIdx = candlesRef.current.length - 1;
+            const coord = timeScale.logicalToCoordinate(lastIdx as unknown as import('lightweight-charts').Logical);
+            if (coord !== null) {
+              rightX = Math.min(width, Number(coord) + 4);
+            }
+          }
+          if (z.status === 'INVALIDATED' && z.invalidation_timestamp) {
+            const invTime = epoch(z.invalidation_timestamp);
+            let invCoord: number | null = null;
+            const direct = timeScale.timeToCoordinate(invTime);
+            if (direct !== null) {
+              invCoord = Number(direct);
+            } else {
+              const bIdx = timeScale.timeToIndex(invTime, true);
+              if (bIdx !== null) {
+                const lCoord = timeScale.logicalToCoordinate(bIdx as unknown as import('lightweight-charts').Logical);
+                if (lCoord !== null) invCoord = Number(lCoord);
+              }
+            }
+            if (invCoord !== null) {
+              rightX = Math.max(leftX, Math.min(rightX, invCoord));
+            }
+          }
+
+          if (mouseX >= leftX && mouseX <= rightX && mouseY >= top && mouseY <= bottom) {
+            matched = z;
+            break;
+          }
+        }
+        setHoveredZone(matched);
+      } else {
+        setHoveredZone(null);
+      }
     });
     const publishVisibleRightCandle = () => {
       const data = candlesRef.current;
@@ -176,6 +500,10 @@ export function TradingChart({ candles, formingCandle, signals, payload, intelli
       observer.disconnect();
       instance.timeScale().unsubscribeVisibleLogicalRangeChange(publishVisibleRightCandle);
       markerPlugin.current?.detach();
+      if (zonesPlugin.current && candleSeries.current) {
+        candleSeries.current.detachPrimitive(zonesPlugin.current);
+        zonesPlugin.current = null;
+      }
       instance.remove();
       chart.current = null;
       candleSeries.current = null;
@@ -238,16 +566,15 @@ export function TradingChart({ candles, formingCandle, signals, payload, intelli
     markerPlugin.current?.setMarkers(markers);
     for (const line of priceLines.current) candleApi.removePriceLine(line);
     priceLines.current = [];
-    if (showZones && payload?.structure) {
-      const zones = [...(payload.structure.support_zones || []).slice(0, 3), ...(payload.structure.resistance_zones || []).slice(0, 3)];
-      zones.forEach((zone, index) => {
-        const isSupport = zone.type === 'SUPPORT';
-        const state = (zone.status || '').toLowerCase();
-        const color = state.includes('broken') ? '#f23645' : state.includes('retest') ? '#ff9800' : isSupport ? '#089981' : '#e36b7c';
-        const style = state.includes('broken') ? LineStyle.Dotted : LineStyle.Dashed;
-        priceLines.current.push(candleApi.createPriceLine({ price: zone.midpoint, color, lineWidth: 1, lineStyle: style, axisLabelVisible: false, title: `${isSupport ? 'SUP' : 'RES'} ${index + 1}${state.includes('broken') ? ' BROKEN' : state.includes('retest') ? ' RETEST' : ''}` }));
-      });
-    }
+
+    // Supply & Demand Zones: Rectangular Bands (Finite boxes, no infinite price lines across chart)
+    const supplies = (payload?.structure?.resistance_zones || payload?.structure?.supply_zones || []).slice(0, 5);
+    const demands = (payload?.structure?.support_zones || payload?.structure?.demand_zones || []).slice(0, 5);
+    const rawZones = showZones ? [...supplies, ...demands] : [];
+    zonesRef.current = rawZones;
+    const latestCandleTime = displayCandles.length ? epoch(displayCandles[displayCandles.length - 1].timestamp) : null;
+    const latestCandleIndex = displayCandles.length > 0 ? displayCandles.length - 1 : null;
+    zonesPlugin.current?.update(rawZones, latestCandleTime, latestCandleIndex);
     const risk = payload?.risk_plan;
     if (showRisk && risk?.valid) {
       const levels = [
@@ -302,7 +629,7 @@ export function TradingChart({ candles, formingCandle, signals, payload, intelli
       <div className="chart-tool-group"><span className="toolbar-label">OVERLAYS</span>{overlaySpec.map((item) => <label key={item.key} className={`overlay-toggle ${overlays[item.key] ? 'selected' : ''}`} title={`${item.label} · computed from completed actual candles`}><input type="checkbox" checked={overlays[item.key]} onChange={(event) => setOverlays((old) => ({ ...old, [item.key]: event.target.checked }))} /><i style={{ background: item.color }} />{item.label}</label>)}</div>
       <div className="chart-tool-group chart-actions">
         <label className="compact-check"><input type="checkbox" checked={showVolume} onChange={(event) => { setShowVolume(event.target.checked); volumeSeries.current?.applyOptions({ visible: event.target.checked }); }} />Volume</label>
-        <label className="compact-check"><input type="checkbox" checked={showZones} onChange={(event) => setShowZones(event.target.checked)} />S/R zones</label>
+        <label className="compact-check"><input type="checkbox" checked={showZones} onChange={(event) => setShowZones(event.target.checked)} />Supply/Demand zones</label>
         <label className="compact-check"><input type="checkbox" checked={showRisk} onChange={(event) => setShowRisk(event.target.checked)} />Risk levels</label>
         <label className="compact-check"><input type="checkbox" checked={showOrbLevels} onChange={(event) => setShowOrbLevels(event.target.checked)} />Opening range</label>
         <label className="compact-check"><input type="checkbox" checked={showPreviousDayLevels} onChange={(event) => setShowPreviousDayLevels(event.target.checked)} />Prev high/low</label>
@@ -315,7 +642,7 @@ export function TradingChart({ candles, formingCandle, signals, payload, intelli
     </div>
     <div className="chart-frame">
       <div ref={host} className="trading-chart" aria-label="AMZN actual 5-minute candlestick chart" />
-      {hover && <div className="market-crosshair-tooltip" style={{ left: Math.min(Math.max(hover.x + 15, 10), Math.max(10, (host.current?.clientWidth || 700) - 250)), top: Math.min(Math.max(hover.y + 12, 10), 390) }}>
+      {hover && <div className="market-crosshair-tooltip" style={{ left: Math.min(Math.max(hover.x + 15, 10), Math.max(10, (host.current?.clientWidth || 700) - 250)), top: Math.min(Math.max(hover.y + 12, 10), 360) }}>
         <b>{hover.signal ? <span className={`decision-text ${hover.signal.classification === 'BUY' ? 'positive' : hover.signal.classification === 'SELL' ? 'negative' : ''}`}>{hover.signal.classification}</span> : 'AMZN · ACTUAL 5M'}</b>
         <span>{formatTime(hover.candle.timestamp, true)}</span>
         <div className="ohlc-grid"><span>O {price(hover.candle.open)}</span><span>H {price(hover.candle.high)}</span><span>L {price(hover.candle.low)}</span><span>C {price(hover.candle.close)}</span><span>V {hover.candle.volume.toLocaleString()}</span></div>
@@ -325,10 +652,49 @@ export function TradingChart({ candles, formingCandle, signals, payload, intelli
           <span>Status {hover.signal.status} · hypothetical only</span>
         </>}
         {lineValues.get(epoch(hover.candle.timestamp))?.ema9 != null && <span>EMA 9 {price(lineValues.get(epoch(hover.candle.timestamp))?.ema9)} · EMA 20 {price(lineValues.get(epoch(hover.candle.timestamp))?.ema20)}</span>}
+        {hoveredZone && (
+          <div className="zone-tooltip-section">
+            <div className="zone-tooltip-header">
+              <span className={`zone-tag ${(hoveredZone.zone_type || (hoveredZone.type === 'RESISTANCE' ? 'SUPPLY' : 'DEMAND')).toLowerCase()}`}>
+                {hoveredZone.zone_type || (hoveredZone.type === 'RESISTANCE' ? 'SUPPLY' : 'DEMAND')} ZONE
+              </span>
+              <span className={`zone-badge ${(hoveredZone.status || 'ACTIVE').toLowerCase()}`}>
+                {hoveredZone.status || 'ACTIVE'}
+              </span>
+            </div>
+            <div className="zone-detail-row">
+              <span className="zone-k">Range:</span>
+              <span className="zone-v">${hoveredZone.lower.toFixed(2)} - ${hoveredZone.upper.toFixed(2)}</span>
+            </div>
+            <div className="zone-detail-row">
+              <span className="zone-k">Formed:</span>
+              <span className="zone-v">{formatTime(hoveredZone.formation_timestamp || hover.candle.timestamp, true)}</span>
+            </div>
+            <div className="zone-detail-row">
+              <span className="zone-k">Touches:</span>
+              <span className="zone-v">{hoveredZone.touches ?? 1}</span>
+            </div>
+            {hoveredZone.distance_from_price != null && (
+              <div className="zone-detail-row">
+                <span className="zone-k">Distance:</span>
+                <span className="zone-v">
+                  ${Math.abs(hoveredZone.distance_from_price).toFixed(2)}
+                  {hoveredZone.distance_atr != null ? ` (${Math.abs(hoveredZone.distance_atr).toFixed(1)} ATR)` : ''}
+                </span>
+              </div>
+            )}
+            {hoveredZone.strength_score != null && (
+              <div className="zone-detail-row">
+                <span className="zone-k">Quality:</span>
+                <span className="zone-v">{hoveredZone.strength_score.toFixed(0)}/100</span>
+              </div>
+            )}
+          </div>
+        )}
       </div>}
       {!candles.length && <div className="chart-empty-overlay">Waiting for actual processed AMZN candles…</div>}
       {candles.length > 0 && !selectedInRange && <div className="chart-empty-overlay selected-outside-range">Selected signal is outside the latest 1,000 plotted candles.</div>}
     </div>
-    <div className="chart-legend-row"><span className="legend-chip"><i className="legend-bull" /> Actual up candle</span><span className="legend-chip"><i className="legend-bear" /> Actual down candle</span><span className="legend-chip"><i className="legend-volume" /> Actual volume</span><span className="legend-chip">Indicators are calculated from actual candles · 5m only</span></div>
+    <div className="chart-legend-row"><span className="legend-chip"><i className="legend-bull" /> Actual up candle</span><span className="legend-chip"><i className="legend-bear" /> Actual down candle</span><span className="legend-chip"><i style={{ display: 'inline-block', width: 8, height: 8, background: '#f2364533', border: '1px solid #f23645' }} /> Supply zone</span><span className="legend-chip"><i style={{ display: 'inline-block', width: 8, height: 8, background: '#08998133', border: '1px solid #089981' }} /> Demand zone</span><span className="legend-chip"><i className="legend-volume" /> Actual volume</span><span className="legend-chip">Indicators & zones from actual completed 5m candles</span></div>
   </div>;
 }

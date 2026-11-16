@@ -101,7 +101,9 @@ def analyze_candles(candles: pd.DataFrame, as_of: datetime | None=None, source="
             # Resolve prior setups against this completed, cutoff-bounded snapshot
             # before deciding whether another hypothetical position may be opened.
             from backend.app.services.analysis.outcomes import resolve_signals
+            from backend.app.services.analysis.ml_evaluation import resolve_ml_predictions, save_ml_prediction
             resolve_signals(frame, as_of=as_of, db_path=db_path)
+            resolve_ml_predictions(candles=frame, as_of=as_of, db_path=db_path)
         atr=float(indicators.atr_14.iloc[-1])
         structure=analyze_structure(indicators,atr)
         weak_break=(structure.get("breakout",{}).get("status")=="POTENTIAL_BREAKOUT" and not structure.get("breakout",{}).get("volume_confirmed")) or (structure.get("breakdown",{}).get("status")=="POTENTIAL_BREAKDOWN" and not structure.get("breakdown",{}).get("volume_confirmed"))
@@ -136,4 +138,10 @@ def analyze_candles(candles: pd.DataFrame, as_of: datetime | None=None, source="
       "data_gaps":frame.attrs.get("gaps",[]),"excluded_calendar_rows":frame.attrs.get("excluded_calendar_rows",0),"indicators":latest,"structure":structure,"market_regime":regime,
       "ml_evidence":ml,"hypothetical_only":True,**decision}
     stored=save_signal(payload,db_path) if persist else None
+    if persist and ml.get("available") and len(frame) > 0:
+        try:
+            from backend.app.services.analysis.ml_evaluation import save_ml_prediction
+            save_ml_prediction(ml, float(frame.close.iloc[-1]), symbol=payload.get("symbol", "AMZN"), db_path=db_path)
+        except Exception as exc:
+            pass
     return {"analysis":payload,"signal_record":stored}

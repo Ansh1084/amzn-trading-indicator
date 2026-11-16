@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import type { AnalysisPayload, DataSnapshotStatus, MarketSnapshot, SignalRecord } from '../../types/analysis';
 import type { MarketIntelligence } from '../../services/analysisApi';
 import { formatTime, price } from '../../utils/format';
+import { LiveMLPerformancePanel } from './LiveMLPerformancePanel';
 
 const n = (value: unknown, digits = 2) =>
   typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '—';
@@ -580,63 +581,9 @@ export function AnalysisPanel({
           </section>
 
           {/* =====================================================================
-              8. RISK MANAGEMENT / TRADE PLAN
+              8. LIVE ML MODEL PERFORMANCE
               ===================================================================== */}
-          <section className="tp-card" aria-label="Section 8: Risk Management">
-            <div className="tp-card-header">
-              <h3 className="tp-heading">Risk Management</h3>
-              <span className={`tp-status-pill ${risk?.valid ? 'pill-green' : 'pill-muted'}`}>
-                {risk?.valid ? 'VALID PLAN' : 'NOT ACTIONABLE'}
-              </span>
-            </div>
-
-            {risk?.valid ? (
-              <div className="tp-plan-content">
-                <div className="tp-plan-grid">
-                  <div className="tp-plan-tile">
-                    <span className="tp-tile-label">Trigger Price</span>
-                    <b className="tp-plan-val">{price(risk.trigger_price)}</b>
-                  </div>
-                  <div className="tp-plan-tile">
-                    <span className="tp-tile-label">Entry Zone</span>
-                    <b className="tp-plan-val">
-                      {risk.entry_zone ? `${price(risk.entry_zone.lower)} – ${price(risk.entry_zone.upper)}` : '—'}
-                    </b>
-                  </div>
-                  <div className="tp-plan-tile">
-                    <span className="tp-tile-label">Stop Loss</span>
-                    <b className="tp-plan-val tone-neg">{price(risk.stop_loss)}</b>
-                  </div>
-                  <div className="tp-plan-tile">
-                    <span className="tp-tile-label">Target 1</span>
-                    <b className="tp-plan-val tone-pos">{price(risk.target_1)}</b>
-                  </div>
-                  <div className="tp-plan-tile">
-                    <span className="tp-tile-label">Target 2</span>
-                    <b className="tp-plan-val tone-pos">{price(risk.target_2)}</b>
-                  </div>
-                  <div className="tp-plan-tile">
-                    <span className="tp-tile-label">Reward / Risk</span>
-                    <b className="tp-plan-val">
-                      {risk.risk_reward_ratio != null ? `${risk.risk_reward_ratio.toFixed(2)} : 1` : '—'}
-                    </b>
-                  </div>
-                </div>
-                <div className="tp-plan-meta">
-                  ATR reference {price(risk.atr_reference)} · Stop: {risk.stop_method || '—'} · Target: {risk.target_method || '—'}
-                </div>
-              </div>
-            ) : (
-              <div className="tp-no-plan-box">
-                <p className="tp-no-plan-text">
-                  No actionable setup is approved at this candle.
-                </p>
-                <span className="tp-invalidation-text">
-                  Invalidation: {payload.setup_invalidation || 'No active setup exists to invalidate.'}
-                </span>
-              </div>
-            )}
-          </section>
+          <LiveMLPerformancePanel lastUpdated={record?.generated_at} />
 
           {/* =====================================================================
               9. VERIFIED INPUTS / MARKET STATISTICS

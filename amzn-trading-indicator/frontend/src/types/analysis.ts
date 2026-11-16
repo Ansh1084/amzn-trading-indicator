@@ -9,13 +9,24 @@ export interface MarketCandle {
 }
 
 export interface Zone {
+  id?: string;
   lower: number;
   upper: number;
   midpoint: number;
   type: 'SUPPORT' | 'RESISTANCE';
-  status?: string;
+  zone_type?: 'SUPPLY' | 'DEMAND';
+  status?: 'ACTIVE' | 'TESTED' | 'INVALIDATED' | string;
+  formation_timestamp?: string;
+  formation_price?: number;
+  latest_retest_timestamp?: string | null;
+  invalidation_timestamp?: string | null;
+  touches?: number;
+  touch_sessions?: string[];
   strength_score?: number;
   distance_from_price?: number;
+  distance_atr?: number;
+  age_sessions?: number;
+  method?: string;
 }
 
 export interface RiskPlan {
@@ -52,6 +63,8 @@ export interface AnalysisPayload {
     status?: string;
     support_zones?: Zone[];
     resistance_zones?: Zone[];
+    demand_zones?: Zone[];
+    supply_zones?: Zone[];
     nearest_support?: Zone | null;
     nearest_resistance?: Zone | null;
     breakout?: { status?: string; volume_confirmed?: boolean };
@@ -157,4 +170,92 @@ export interface DataSnapshotStatus {
   dataset_end?: string;
   latest_completed_rth_candle?: string;
   last_sync_at?: string | null;
+}
+
+export interface MLPerformanceResponse {
+  has_data: boolean;
+  empty_reason?: string;
+  window: string;
+  requested_window_size: number | null;
+  sample_count: number;
+  is_partial: boolean;
+  total_predictions_tracked: number;
+  pending_count: number;
+  excluded_count: number;
+  total_resolved_count: number;
+  exclusion_breakdown: Record<string, number>;
+  start_date: string | null;
+  end_date: string | null;
+  last_updated: string;
+  model_identifier: {
+    model_name: string;
+    model_version: string;
+    artifact_sha256?: string;
+    horizon_minutes: number;
+    input_feature_count: number;
+  };
+  summary: {
+    accuracy: number;
+    macro_f1: number;
+    weighted_f1: number;
+    balanced_accuracy: number;
+    precision_overall: number;
+    recall_overall: number;
+    total_resolved: number;
+    correct: number;
+    incorrect: number;
+  } | null;
+  metrics: {
+    accuracy: number;
+    up: {
+      precision: number;
+      recall: number;
+      f1: number;
+      actual_count: number;
+      predicted_count: number;
+    };
+    down: {
+      precision: number;
+      recall: number;
+      f1: number;
+      actual_count: number;
+      predicted_count: number;
+    };
+    macro_f1: number;
+    weighted_f1: number;
+    balanced_accuracy: number;
+  } | null;
+  confusion_matrix: {
+    true_up_pred_up: number;
+    true_up_pred_down: number;
+    true_down_pred_up: number;
+    true_down_pred_down: number;
+    total_actual_up: number;
+    total_actual_down: number;
+    total_pred_up: number;
+    total_pred_down: number;
+    total_resolved: number;
+  } | null;
+  probability_evaluation: {
+    log_loss: number;
+    brier_score: number;
+    expected_calibration_error: number;
+    is_uncalibrated: boolean;
+    raw_score_notice: string;
+    calibration_bins: Array<{
+      bin_label: string;
+      lower: number;
+      upper: number;
+      sample_count: number;
+      mean_predicted_prob: number | null;
+      observed_positive_rate: number | null;
+    }>;
+  } | null;
+  detailed_table: Array<{
+    metric: string;
+    up: string;
+    down: string;
+    overall: string;
+    tooltip?: string;
+  }>;
 }

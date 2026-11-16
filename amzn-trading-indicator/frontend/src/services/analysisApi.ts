@@ -1,5 +1,5 @@
 import { API_BASE, request } from './api';
-import type { AnalysisLatestResponse, DataSnapshotStatus, MarketSnapshot, MarketStreamStatus, SignalRecord } from '../types/analysis';
+import type { AnalysisLatestResponse, DataSnapshotStatus, MarketSnapshot, MarketStreamStatus, MLPerformanceResponse, SignalRecord } from '../types/analysis';
 
 export const analysisApi = {
   market: (limit = 1000) => request<MarketSnapshot>(`/market/candles?limit=${limit}&source=local`),
@@ -18,6 +18,13 @@ export const analysisApi = {
   operations: () => request<{ operations: Array<{ operation_id: string; kind: string; status: string; stage: string; progress: number; updated_at: string; error?: string | null }> }>('/operations'),
   latestSignalUrl: () => `${API_BASE}/analysis/latest`,
   marketIntelligence: () => request<MarketIntelligence>('/analysis/market-intelligence'),
+  mlPerformance: (window = '50', resolve = true) =>
+    request<MLPerformanceResponse>(`/analysis/ml-performance?window=${encodeURIComponent(window)}&resolve=${resolve}`),
+  resolveMLPerformance: () =>
+    request<{ status: string; resolved_count: number; excluded_count: number; still_pending_count: number }>(
+      '/analysis/ml-performance/resolve',
+      { method: 'POST' }
+    ),
 };
 
 export interface MarketIntelligence {
