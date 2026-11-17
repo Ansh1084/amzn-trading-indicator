@@ -216,7 +216,7 @@ export function SignalStream({
         <div>
           <span className="terminal-kicker">PERSISTED DECISIONS · HYPOTHETICAL ONLY</span>
           <h2>Algorithmic Signal Stream</h2>
-          <p>Stored records from the analysis API. Select any row to inspect full reasoning, risk setup, and model breakdown.</p>
+          <p>Dual-horizon analysis log: 10-minute micro-signals &amp; 60-minute trading decisions. Select any row to inspect full evidence, risk setup, and model breakdown.</p>
         </div>
         <div className="stream-count">
           {filtered.length.toLocaleString()}{' '}
@@ -340,7 +340,7 @@ export function SignalStream({
           <thead>
             <tr>
               <th className="col-time">Time</th>
-              <th className="col-signal">Signal</th>
+              <th className="col-signal">Signal (10M / 60M)</th>
               <th className="col-ml">ML Direction</th>
               <th className="col-trigger text-right">Trigger Price</th>
               <th className="col-status">Status</th>
@@ -426,13 +426,17 @@ function SignalRow({
   const payload = record.payload || {};
   const risk = payload.risk_plan;
   const ml = payload.ml_evidence;
+  const d60 = payload.decision_60m;
+  const d60Decision = d60?.decision;
   const normSignal = normalizeSignal(record.classification);
   const isActionable = ['BUY', 'SELL'].includes(normSignal);
 
-  // Trigger price: actual recorded trigger price if valid setup, otherwise reference candle close
+  // Trigger price: actual recorded trigger price if valid setup (10M or 60M), otherwise reference candle close
   const triggerPrice =
     risk?.trigger_price != null
       ? risk.trigger_price
+      : d60?.risk_plan?.trigger_price != null && d60.risk_plan.valid
+      ? d60.risk_plan.trigger_price
       : typeof payload.indicators?.close === 'number'
       ? payload.indicators.close
       : null;
@@ -474,11 +478,24 @@ function SignalRow({
           </div>
         </td>
 
-        {/* 2. SIGNAL */}
+        {/* 2. SIGNAL (10M / 60M) */}
         <td className="stream-cell-signal">
-          <span className={`stream-signal-badge badge-${normSignal.toLowerCase()}`}>
-            {normSignal === 'BUY' ? '↑ BUY' : normSignal === 'SELL' ? '↓ SELL' : normSignal}
-          </span>
+          <div className="stream-signal-badges-wrap">
+            <span
+              className={`stream-signal-badge badge-${normSignal.toLowerCase()}`}
+              title="10-Minute Technical Micro-Signal"
+            >
+              10M: {normSignal === 'BUY' ? '↑ BUY' : normSignal === 'SELL' ? '↓ SELL' : normSignal}
+            </span>
+            {d60Decision ? (
+              <span
+                className={`stream-d60-pill d60-pill-${d60Decision.toLowerCase().replace(/_/g, '-')}`}
+                title={`60-Minute Trading Decision: ${d60Decision}${d60?.directional_score != null ? ` (score: ${d60.directional_score})` : ''}`}
+              >
+                60M: {d60Decision === 'WAIT FOR CONFIRMATION' ? 'WAIT' : d60Decision}
+              </span>
+            ) : null}
+          </div>
         </td>
 
         {/* 3. ML DIRECTION */}
@@ -564,6 +581,13 @@ export function ExpandableDetailRow({
   const payload = record.payload || {};
   const risk = payload.risk_plan;
   const ml = payload.ml_evidence;
+  const d60 = payload.decision_60m;
+  const d60Decision = d60?.decision;
+  const d60Score = d60?.directional_score;
+  const d60Risk = d60?.risk_plan?.valid ? d60.risk_plan : (d60?.active_signal?.valid ? d60.active_signal : null);
+  const effectiveRisk = risk?.valid ? risk : (d60Risk?.valid ? d60Risk : null);
+  const is60mRisk = !risk?.valid && Boolean(d60Risk?.valid);
+
   const score = record.final_score ?? payload.final_decision_score;
   const techScore = payload.technical_score;
 
@@ -632,11 +656,24 @@ export function ExpandableDetailRow({
                 <h4 className="stream-card-heading">Decision &amp; Model Metrics</h4>
                 <div className="stream-metrics-grid">
                   <div className="stream-metric-cell">
+                    <span className="stream-metric-lbl">60M Decision</span>
+                    <b className={`stream-metric-val ${d60Decision === 'BUY' ? 'tone-up' : d60Decision === 'SELL' ? 'tone-down' : ''}`}>
+                      {d60Decision || 'HOLD'}
+                      {d60Score != null ? ` (${d60Score > 0 ? '+' : ''}${d60Score.toFixed(3)})` : ''}
+                    </b>
+                  </div>
+                  <div className="stream-metric-cell">
+                    <span className="stream-metric-lbl">10M Micro-Signal</span>
+                    <b className={`stream-metric-val ${record.classification.includes('BUY') ? 'tone-up' : record.classification.includes('SELL') ? 'tone-down' : ''}`}>
+                      {record.classification}
+                    </b>
+                  </div>
+                  <div className="stream-metric-cell">
                     <span className="stream-metric-lbl">Market Bias</span>
                     <b className={`stream-metric-val ${biasTone}`}>{bias}</b>
                   </div>
                   <div className="stream-metric-cell">
-                    <span className="stream-metric-lbl">Decision Engine Score</span>
+                    <span className="stream-metric-lbl">10M Score</span>
                     <b className="stream-metric-val mono-num">
                       {score != null ? score.toFixed(3) : '—'}
                     </b>
@@ -690,47 +727,49 @@ export function ExpandableDetailRow({
               {/* Box 2: Risk Management / Trade Setup */}
               <div className="stream-detail-card">
                 <div className="stream-card-head-row">
-                  <h4 className="stream-card-heading">Trade Setup &amp; Risk Levels</h4>
+                  <h4 className="stream-card-heading">
+                    Trade Setup &amp; Risk Levels {is60mRisk ? '(60M Setup)' : ''}
+                  </h4>
                   <span
                     className={`stream-status-pill ${
-                      risk?.valid ? 'status-active' : 'status-not_actionable'
+                      effectiveRisk?.valid ? 'status-active' : 'status-not_actionable'
                     }`}
                   >
-                    {risk?.valid ? 'Valid Plan' : 'Not Actionable'}
+                    {effectiveRisk?.valid ? (is60mRisk ? '60M Valid Plan' : 'Valid Plan') : 'Not Actionable'}
                   </span>
                 </div>
 
-                {risk?.valid ? (
+                {effectiveRisk?.valid ? (
                   <div className="stream-risk-grid">
                     <div className="stream-risk-cell">
                       <span className="stream-risk-lbl">Trigger Price</span>
-                      <b className="stream-risk-val mono-num">{price(risk.trigger_price)}</b>
+                      <b className="stream-risk-val mono-num">{price(effectiveRisk.trigger_price)}</b>
                     </div>
                     <div className="stream-risk-cell">
                       <span className="stream-risk-lbl">Entry Zone</span>
                       <b className="stream-risk-val mono-num">
-                        {risk.entry_zone
-                          ? `${price(risk.entry_zone.lower)} – ${price(risk.entry_zone.upper)}`
+                        {effectiveRisk.entry_zone
+                          ? `${price(effectiveRisk.entry_zone.lower)} – ${price(effectiveRisk.entry_zone.upper)}`
                           : '—'}
                       </b>
                     </div>
                     <div className="stream-risk-cell">
                       <span className="stream-risk-lbl">Stop Loss</span>
-                      <b className="stream-risk-val mono-num tone-down">{price(risk.stop_loss)}</b>
+                      <b className="stream-risk-val mono-num tone-down">{price(effectiveRisk.stop_loss)}</b>
                     </div>
                     <div className="stream-risk-cell">
                       <span className="stream-risk-lbl">Target 1</span>
-                      <b className="stream-risk-val mono-num tone-up">{price(risk.target_1)}</b>
+                      <b className="stream-risk-val mono-num tone-up">{price(effectiveRisk.target_1)}</b>
                     </div>
                     <div className="stream-risk-cell">
                       <span className="stream-risk-lbl">Target 2</span>
-                      <b className="stream-risk-val mono-num tone-up">{price(risk.target_2)}</b>
+                      <b className="stream-risk-val mono-num tone-up">{price(effectiveRisk.target_2)}</b>
                     </div>
                     <div className="stream-risk-cell">
                       <span className="stream-risk-lbl">Reward / Risk</span>
                       <b className="stream-risk-val mono-num">
-                        {risk.risk_reward_ratio != null
-                          ? `${risk.risk_reward_ratio.toFixed(2)} : 1`
+                        {effectiveRisk.risk_reward_ratio != null
+                          ? `${effectiveRisk.risk_reward_ratio.toFixed(2)} : 1`
                           : '—'}
                       </b>
                     </div>
@@ -738,7 +777,9 @@ export function ExpandableDetailRow({
                 ) : (
                   <div className="stream-no-risk-box">
                     <p className="stream-no-risk-msg">
-                      {risk?.reason || 'No actionable trade setup approved at this candle.'}
+                      {d60?.active_signal?.direction
+                        ? `Open 60M ${d60.active_signal.direction} position active from ${formatTime(d60.active_signal.candle_timestamp, true)} (Status: ${formatStatus(d60.active_signal.status)}). No new setup required.`
+                        : risk?.reason || d60?.risk_plan?.reason || 'No actionable trade setup approved at this candle.'}
                     </p>
                     {payload.setup_invalidation && (
                       <span className="stream-invalidation-msg">
