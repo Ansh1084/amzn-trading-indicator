@@ -2,9 +2,9 @@ import { API_BASE, request } from './api';
 import type { AnalysisLatestResponse, DataSnapshotStatus, MarketSnapshot, MarketStreamStatus, MLPerformanceResponse, SignalRecord } from '../types/analysis';
 
 export const analysisApi = {
-  market: (limit = 1000) => request<MarketSnapshot>(`/market/candles?limit=${limit}&source=local`),
-  marketAfter: (timestamp: string) => request<MarketSnapshot>(`/market/candles?limit=1000&source=local&after=${encodeURIComponent(timestamp)}`),
-  status: () => request<DataSnapshotStatus>('/data/status?chart_limit=1000'),
+  market: (limit = 1500) => request<MarketSnapshot>(`/market/candles?limit=${limit}&source=local`),
+  marketAfter: (timestamp: string) => request<MarketSnapshot>(`/market/candles?limit=1500&source=local&after=${encodeURIComponent(timestamp)}`),
+  status: () => request<DataSnapshotStatus>('/data/status?chart_limit=1500'),
   streamStatus: () => request<MarketStreamStatus>('/market/stream/status'),
   latest: () => request<AnalysisLatestResponse>('/analysis/latest'),
   signals: (offset = 0, limit = 100, status?: string) => {

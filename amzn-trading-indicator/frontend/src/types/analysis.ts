@@ -15,6 +15,7 @@ export interface Zone {
   midpoint: number;
   type: 'SUPPORT' | 'RESISTANCE';
   zone_type?: 'SUPPLY' | 'DEMAND';
+  timeframe?: '1H' | '15M' | '5M' | string;
   status?: 'ACTIVE' | 'TESTED' | 'INVALIDATED' | string;
   formation_timestamp?: string;
   formation_price?: number;

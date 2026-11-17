@@ -63,7 +63,7 @@ export function TerminalDashboard() {
   const reload = useCallback(async (quiet = false) => {
     if (!quiet) { setActivity((old) => old ? old : 'refreshing'); setError(''); }
     const [marketResult, statusResult, latestResult, signalsResult, intelligenceResult] = await Promise.allSettled([
-      analysisApi.market(1000), analysisApi.status(), analysisApi.latest(), analysisApi.signals(0, 100), analysisApi.marketIntelligence(),
+      analysisApi.market(1500), analysisApi.status(), analysisApi.latest(), analysisApi.signals(0, 100), analysisApi.marketIntelligence(),
     ]);
     if (marketResult.status === 'fulfilled') {
       setMarket(marketResult.value);
@@ -123,7 +123,7 @@ export function TerminalDashboard() {
                 if (!current) return current;
                 const map = new Map(current.candles.map((item) => [item.timestamp, item]));
                 map.set(candle.timestamp, candle);
-                const candles = Array.from(map.values()).sort((a, b) => a.timestamp.localeCompare(b.timestamp)).slice(-1000);
+                const candles = Array.from(map.values()).sort((a, b) => a.timestamp.localeCompare(b.timestamp)).slice(-1500);
                 lastCandleTimestampRef.current = candles.at(-1)?.timestamp || null;
                 return { ...current, candles, latest_timestamp: candles.at(-1)?.timestamp || current.latest_timestamp,
                   chart_rows: candles.length, forming_candle: current.forming_candle?.timestamp === candle.timestamp ? null : current.forming_candle,

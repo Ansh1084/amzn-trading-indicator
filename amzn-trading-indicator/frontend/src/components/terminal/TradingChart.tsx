@@ -109,21 +109,12 @@ class SupplyDemandPaneRenderer implements IPrimitivePaneRenderer {
           }
         }
 
-        // If formation candle is off-screen to the left (before visible range):
-        // NEVER default to X1 = 0! Setting X1 = 0 creates an infinite full-screen band.
-        // Instead: only display if the zone was tested or interacted with in the visible chart.
-        if (X1 === null) {
-          if (item.zone.latest_retest_timestamp) {
-            const retestTime = epoch(item.zone.latest_retest_timestamp);
-            const retestCoord = timeScale.timeToCoordinate(retestTime);
-            if (retestCoord !== null) {
-              X1 = Math.max(0, Number(retestCoord) - 60);
-            }
-          }
+        // If formation candle is off-screen to the left (formed before visible chart):
+        // Start cleanly from left viewport edge (X1 = 0) so historical zones span the visible price action
+        if (X1 === null || X1 < 0) {
+          X1 = 0;
         }
 
-        // If formation candle is not visible and no recent retest exists on screen, skip.
-        if (X1 === null) continue;
         if (X1 >= chartWidth) continue;
 
         // X2: Calculate finite right boundary
@@ -145,16 +136,10 @@ class SupplyDemandPaneRenderer implements IPrimitivePaneRenderer {
               }
             }
             if (invalCoord !== null) {
+              // If invalidated before visible screen began, skip drawing
+              if (invalCoord <= 0) continue;
               X2 = Math.min(defaultX2, Math.max(X1, invalCoord));
             }
-          }
-        } else if (item.status === 'TESTED' && item.zone.latest_retest_timestamp) {
-          // 2. Tested zones: can terminate at latest retest + small continuation
-          const retestTime = epoch(item.zone.latest_retest_timestamp);
-          const retestCoord = timeScale.timeToCoordinate(retestTime);
-          if (retestCoord !== null) {
-            const extendedX = Math.min(defaultX2, Number(retestCoord) + 15);
-            X2 = Math.max(X1 + 10, extendedX);
           }
         }
 
@@ -188,12 +173,13 @@ class SupplyDemandPaneRenderer implements IPrimitivePaneRenderer {
         context.setLineDash([]);
 
         // Subtle TradingView-style label inside the box
-        if (width >= 45 && height >= 14) {
+        if (width >= 40 && height >= 12) {
           context.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
           context.fillStyle = isSupply
             ? (isInvalidated ? 'rgba(242, 54, 69, 0.50)' : 'rgba(242, 54, 69, 0.85)')
             : (isInvalidated ? 'rgba(8, 153, 129, 0.50)' : 'rgba(8, 153, 129, 0.85)');
-          const labelText = isSupply ? 'Supply' : 'Demand';
+          const tfLabel = item.zone.timeframe ? `${item.zone.timeframe} ` : '';
+          const labelText = `${tfLabel}${isSupply ? 'Supply' : 'Demand'}`;
           context.fillText(labelText, X1 + 6, Y1 + Math.min(height - 3, 11));
         }
       }
@@ -252,10 +238,7 @@ class SupplyDemandZonesPrimitive implements ISeriesPrimitive<Time> {
   update(zones: Zone[], latestTime: UTCTimestamp | null, latestIndex: number | null = null) {
     this.latestTime = latestTime;
     this.latestIndex = latestIndex;
-    // Render active and tested zones only to maintain a clean, limited, finite terminal chart
-    const activeZones = zones.filter((z) => z.status !== 'INVALIDATED');
-    const displayZones = activeZones.length > 0 ? activeZones : zones;
-    this.items = displayZones.map((z) => {
+    this.items = (zones || []).map((z) => {
       const isSupply = z.zone_type === 'SUPPLY' || z.type === 'RESISTANCE';
       return {
         zone: z,
@@ -477,12 +460,11 @@ export function TradingChart({ candles, formingCandle, signals, payload, intelli
             }
           }
 
-          if (leftX === null && z.latest_retest_timestamp) {
-            const retestCoord = timeScale.timeToCoordinate(epoch(z.latest_retest_timestamp));
-            if (retestCoord !== null) leftX = Math.max(0, Number(retestCoord) - 60);
+          if (leftX === null || leftX < 0) {
+            leftX = 0;
           }
 
-          if (leftX === null || leftX >= width) continue;
+          if (leftX >= width) continue;
 
           let rightX = width;
           if (candlesRef.current.length > 0) {
@@ -513,11 +495,6 @@ export function TradingChart({ candles, formingCandle, signals, payload, intelli
               if (invCoord !== null) {
                 rightX = Math.min(rightX, Math.max(leftX, invCoord));
               }
-            }
-          } else if (z.status === 'TESTED' && z.latest_retest_timestamp) {
-            const retestCoord = timeScale.timeToCoordinate(epoch(z.latest_retest_timestamp));
-            if (retestCoord !== null) {
-              rightX = Math.min(rightX, Math.max(leftX + 10, Number(retestCoord) + 15));
             }
           }
 
@@ -616,7 +593,7 @@ export function TradingChart({ candles, formingCandle, signals, payload, intelli
     priceLines.current = [];
 
     // Supply & Demand Zones: Rectangular Bands (Finite boxes, no infinite price lines across chart)
-    const supplies = (payload?.structure?.resistance_zones || payload?.structure?.supply_zones || []).slice(0, 5);
+    const supplies = (payload?.structure?.resistance_zones || payload?.structure?.supply_zones || []).slice(0, 3);
     const demands = (payload?.structure?.support_zones || payload?.structure?.demand_zones || []).slice(0, 5);
     const rawZones = showZones ? [...supplies, ...demands] : [];
     zonesRef.current = rawZones;
@@ -720,15 +697,40 @@ export function TradingChart({ candles, formingCandle, signals, payload, intelli
             </div>
             <div className="zone-detail-row">
               <span className="zone-k">Touches:</span>
-              <span className="zone-v">{hoveredZone.touches ?? 1}</span>
+              <span className="zone-v">
+                {hoveredZone.touches ?? 1}
+                {hoveredZone.touch_sessions && hoveredZone.touch_sessions.length > 1 ? ` (${hoveredZone.touch_sessions.length} sessions)` : ''}
+              </span>
             </div>
             {hoveredZone.distance_from_price != null && (
               <div className="zone-detail-row">
-                <span className="zone-k">Distance:</span>
+                <span className="zone-k">Dist (Current):</span>
                 <span className="zone-v">
                   ${Math.abs(hoveredZone.distance_from_price).toFixed(2)}
                   {hoveredZone.distance_atr != null ? ` (${Math.abs(hoveredZone.distance_atr).toFixed(1)} ATR)` : ''}
                 </span>
+              </div>
+            )}
+            {hover.candle && hoveredZone.midpoint != null && (
+              <div className="zone-detail-row">
+                <span className="zone-k">Dist (This Bar):</span>
+                <span className="zone-v">
+                  ${Math.abs(hover.candle.close - hoveredZone.midpoint).toFixed(2)}
+                  {(() => {
+                    const rawAtr = payload?.indicators?.atr_14;
+                    const fallbackAtr = typeof rawAtr === 'number' ? rawAtr : (typeof rawAtr === 'string' ? parseFloat(rawAtr) : 0.54);
+                    const atrVal = (hoveredZone.distance_atr && hoveredZone.distance_from_price)
+                      ? Math.abs(hoveredZone.distance_from_price / hoveredZone.distance_atr)
+                      : fallbackAtr;
+                    return (typeof atrVal === 'number' && atrVal > 0) ? ` (${(Math.abs(hover.candle.close - hoveredZone.midpoint) / atrVal).toFixed(1)} ATR)` : '';
+                  })()}
+                </span>
+              </div>
+            )}
+            {hoveredZone.status === 'INVALIDATED' && hoveredZone.invalidation_timestamp && (
+              <div className="zone-detail-row">
+                <span className="zone-k">Broken At:</span>
+                <span className="zone-v">{formatTime(hoveredZone.invalidation_timestamp, true)}</span>
               </div>
             )}
             {hoveredZone.strength_score != null && (
@@ -741,7 +743,7 @@ export function TradingChart({ candles, formingCandle, signals, payload, intelli
         )}
       </div>}
       {!candles.length && <div className="chart-empty-overlay">Waiting for actual processed AMZN candles…</div>}
-      {candles.length > 0 && !selectedInRange && <div className="chart-empty-overlay selected-outside-range">Selected signal is outside the latest 1,000 plotted candles.</div>}
+      {candles.length > 0 && !selectedInRange && <div className="chart-empty-overlay selected-outside-range">Selected signal is outside the latest 1,500 plotted candles.</div>}
     </div>
     <div className="chart-legend-row"><span className="legend-chip"><i className="legend-bull" /> Actual up candle</span><span className="legend-chip"><i className="legend-bear" /> Actual down candle</span><span className="legend-chip"><i style={{ display: 'inline-block', width: 8, height: 8, background: '#f2364533', border: '1px solid #f23645' }} /> Supply zone</span><span className="legend-chip"><i style={{ display: 'inline-block', width: 8, height: 8, background: '#08998133', border: '1px solid #089981' }} /> Demand zone</span><span className="legend-chip"><i className="legend-volume" /> Actual volume</span><span className="legend-chip">Indicators & zones from actual completed 5m candles</span></div>
   </div>;

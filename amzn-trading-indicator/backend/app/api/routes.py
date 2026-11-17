@@ -92,6 +92,12 @@ def _analysis_local_candles() -> pd.DataFrame:
     frame = pd.read_csv(path)
     if "timestamp" not in frame:
         raise HTTPException(status_code=503, detail="Processed market snapshot has no timestamp column")
+    stream_rows = market_store.get_candles(limit=10000)
+    if stream_rows:
+        stream_df = pd.DataFrame(stream_rows)
+        frame = pd.concat([frame, stream_df], ignore_index=True, sort=False)
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, format="ISO8601")
+        frame = frame.sort_values("timestamp").drop_duplicates("timestamp", keep="last").reset_index(drop=True)
     return frame
 
 
@@ -330,7 +336,7 @@ def _candles(source: str) -> pd.DataFrame:
 
 
 @router.get("/market/candles")
-def market_candles(limit: int = Query(1200, ge=1, le=10000), source: str = "local", after: str | None = None):
+def market_candles(limit: int = Query(1500, ge=1, le=10000), source: str = "local", after: str | None = None):
     # Capture cursor before reading; SSE replays any event concurrent with this snapshot.
     cursor = market_store.latest_event_id()
     full = _candles(source) if not after else pd.DataFrame(columns=["timestamp","open","high","low","close","volume"])

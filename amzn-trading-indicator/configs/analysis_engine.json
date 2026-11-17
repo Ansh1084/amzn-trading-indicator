@@ -7,7 +7,7 @@
   "swing_left_bars": 2,
   "swing_right_bars": 2,
   "zone_tolerance_atr": 0.35,
-  "maximum_level_sessions": 5,
+  "maximum_level_sessions": 15,
   "minimum_touch_sessions": 2,
   "breakout_penetration_atr": 0.15,
   "breakout_relative_volume": 1.2,
